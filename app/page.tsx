@@ -23,12 +23,24 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty';
+import {
   NativeSelect,
   NativeSelectOption,
 } from '@/components/ui/native-select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
-import { analyzePdf, type AnalyzedQuestion } from '@/lib/pdf-analysis';
+import {
+  analyzePdf,
+  loadAchievementStandards,
+  type AnalyzedQuestion,
+  type StandardRecord,
+} from '@/lib/pdf-analysis';
 import { downloadDocx, downloadHwpx } from '@/lib/document-export';
 
 const sampleQuestions: AnalyzedQuestion[] = [
@@ -36,41 +48,48 @@ const sampleQuestions: AnalyzedQuestion[] = [
     number: 1,
     type: '객관식 · 3점',
     text: '그림은 수평면에서 일정한 속력으로 직선 운동하는 물체의 위치를 시간에 따라 나타낸 것이다. 이 물체의 운동에 대한 설명으로 옳은 것만을 <보기>에서 고른 것은?',
-    standardCode: '[12물리01-01]',
-    standard: '여러 가지 물체의 운동 사례를 찾아 속력의 변화와 운동 방향의 변화에 따라 분류할 수 있다.',
+    standardCode: '[12물리01-02]',
+    standard: '뉴턴 운동 법칙으로 등가속도 운동을 설명하고, 교통안전 사고 예방에 적용할 수 있다.',
     confidence: 96,
-    domain: '역학과 에너지',
+    domain: '고등학교 · 물리학',
   },
   {
     number: 2,
     type: '객관식 · 3점',
     text: '질량이 같은 두 물체 A, B가 각각 다른 높이에서 자유 낙하한다. 두 물체가 지면에 도달하기 직전의 운동량을 비교한 것으로 옳은 것은?',
-    standardCode: '[12물리01-05]',
-    standard: '충격량과 운동량의 관계를 이해하고 일상생활에서 충격을 감소시키는 예를 찾을 수 있다.',
+    standardCode: '[12물리01-03]',
+    standard: '작용과 반작용 관계와 운동량 보존 법칙을 알고, 스포츠, 교통수단, 발사체 등에 적용할 수 있다.',
     confidence: 91,
-    domain: '역학과 에너지',
+    domain: '고등학교 · 물리학',
   },
   {
     number: 3,
     type: '객관식 · 2점',
     text: '전자기파 A, B의 진동수와 파장에 대한 설명으로 옳은 것을 고르시오.',
-    standardCode: '[12물리03-02]',
-    standard: '파동의 간섭이 활용되는 예를 찾아 그 원리를 설명할 수 있다.',
+    standardCode: '[12물리03-01]',
+    standard: '빛의 중첩과 간섭을 통해 빛의 파동성을 알고, 이를 이용한 기술과 현상을 예를 들어 설명할 수 있다.',
     confidence: 78,
-    domain: '파동과 정보통신',
+    domain: '고등학교 · 물리학',
   },
 ];
 
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [fileName, setFileName] = useState('2026학년도 6월 모의평가_물리학Ⅰ.pdf');
+  const [fileName, setFileName] = useState('예시 · 2026학년도 6월 모의평가_물리학Ⅰ.pdf');
   const [selected, setSelected] = useState(0);
   const [questionData, setQuestionData] = useState(sampleQuestions);
-  const [subject, setSubject] = useState('physics');
+  const [subject, setSubject] = useState('고등학교|물리학');
   const [pageCount, setPageCount] = useState(24);
   const [status, setStatus] = useState<'ready' | 'analyzing' | 'error'>('ready');
   const [error, setError] = useState('');
   const [exportOpen, setExportOpen] = useState(false);
+  const [analysisProgress, setAnalysisProgress] = useState(0);
+  const [isDemo, setIsDemo] = useState(true);
+  const [standards, setStandards] = useState<StandardRecord[]>([]);
+
+  useEffect(() => {
+    void loadAchievementStandards().then(setStandards).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     type Context = { registerTool: (tool: unknown, options?: { signal?: AbortSignal }) => void | Promise<void> };
@@ -112,11 +131,16 @@ export default function Home() {
       return;
     }
     setFileName(file.name);
+    setQuestionData([]);
+    setPageCount(0);
     setStatus('analyzing');
+    setAnalysisProgress(0);
+    setIsDemo(false);
     setError('');
     setSelected(0);
     try {
-      const result = await analyzePdf(file, subject);
+      const result = await analyzePdf(file, subject, (page, total) => setAnalysisProgress(Math.round((page / total) * 100)));
+      if (!result.questions.length) throw new Error('문항을 찾지 못했습니다. 텍스트가 포함된 모의고사 PDF인지 확인해 주세요.');
       setPageCount(result.pageCount);
       setQuestionData(result.questions);
       setStatus('ready');
@@ -129,6 +153,22 @@ export default function Home() {
   function updateSelectedText(text: string) {
     setQuestionData((current) => current.map((question, index) => index === selected ? { ...question, text } : question));
   }
+
+  function updateSelectedStandard(code: string) {
+    const standard = standards.find((item) => item.code === code && `${item.school}|${item.subject}` === subject);
+    if (!standard) return;
+    setQuestionData((current) => current.map((question, index) => index === selected ? {
+      ...question,
+      standardCode: standard.code,
+      standard: standard.statement,
+      domain: `${standard.school} · ${standard.subject}`,
+      confidence: 100,
+    } : question));
+  }
+
+  const courseOptions = [...new Map(standards.map((item) => [`${item.school}|${item.subject}`, { value: `${item.school}|${item.subject}`, label: `${item.school} · ${item.subject}` }])).values()]
+    .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
+  const courseStandards = standards.filter((item) => `${item.school}|${item.subject}` === subject);
 
   const standardCount = new Set(questionData.map((question) => question.standardCode)).size;
   const highConfidence = questionData.filter((question) => question.confidence >= 85).length;
@@ -172,23 +212,20 @@ export default function Home() {
               <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-accent text-accent-foreground"><FileText className="size-5" /></span>
               <div className="min-w-0">
                 <p className="line-clamp-2 text-sm font-semibold leading-5">{fileName}</p>
-                <p className="mt-1 text-xs text-white/50">{pageCount}쪽 · 문항 {questionData.length}개</p>
+                <p className="mt-1 text-xs text-white/50">{status === 'analyzing' ? `분석 중 · ${analysisProgress}%` : pageCount ? `${pageCount}쪽 · 문항 ${questionData.length}개` : '분석 결과 없음'}</p>
               </div>
             </div>
           </button>
-          <input ref={inputRef} type="file" accept="application/pdf" className="hidden" onChange={(event) => event.target.files?.[0] && void handleFile(event.target.files[0])} />
+          <input ref={inputRef} type="file" accept="application/pdf" className="hidden" onClick={(event) => { event.currentTarget.value = ''; }} onChange={(event) => event.target.files?.[0] && void handleFile(event.target.files[0])} />
 
           <div className="mt-6 space-y-3">
             <label className="block text-xs font-medium text-white/55">교육과정</label>
             <NativeSelect className="w-full [&_select]:border-white/12 [&_select]:bg-white/7 [&_select]:text-white">
-              <NativeSelectOption>2022 개정 교육과정</NativeSelectOption>
-              <NativeSelectOption>2015 개정 교육과정</NativeSelectOption>
+              <NativeSelectOption>2022 개정 교육과정 · 원본 CSV</NativeSelectOption>
             </NativeSelect>
             <label className="block pt-2 text-xs font-medium text-white/55">교과 · 과목</label>
             <NativeSelect value={subject} onChange={(event) => setSubject(event.target.value)} className="w-full [&_select]:border-white/12 [&_select]:bg-white/7 [&_select]:text-white">
-              <NativeSelectOption value="physics">고등학교 · 물리학</NativeSelectOption>
-              <NativeSelectOption value="math">고등학교 · 수학</NativeSelectOption>
-              <NativeSelectOption value="science">중학교 · 과학</NativeSelectOption>
+              {courseOptions.length ? courseOptions.map((option) => <NativeSelectOption key={option.value} value={option.value}>{option.label}</NativeSelectOption>) : <NativeSelectOption value="고등학교|물리학">고등학교 · 물리학</NativeSelectOption>}
             </NativeSelect>
           </div>
 
@@ -213,9 +250,9 @@ export default function Home() {
           <div className="flex flex-col gap-4 rounded-[22px] border bg-card p-4 shadow-sm sm:p-5">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <div>
-                <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">{status === 'analyzing' ? <LoaderCircle className="size-4 animate-spin text-primary" /> : <ScanSearch className="size-4 text-primary" />} {status === 'analyzing' ? 'PDF에서 문항을 찾는 중' : status === 'error' ? '분석을 완료하지 못했습니다' : '자동 분석 완료'}</div>
+                <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">{status === 'analyzing' ? <LoaderCircle className="size-4 animate-spin text-primary" /> : <ScanSearch className="size-4 text-primary" />} {status === 'analyzing' ? `PDF에서 문항을 찾는 중 · ${analysisProgress}%` : status === 'error' ? '분석을 완료하지 못했습니다' : isDemo ? '예시 분석 결과' : '새 PDF 분석 완료'}</div>
                 <h1 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-[28px]">문항과 성취기준을 확인하세요</h1>
-                {error && <p role="alert" className="mt-2 text-sm font-medium text-destructive">{error} 샘플 분석 결과를 계속 확인할 수 있습니다.</p>}
+                {error && <p role="alert" className="mt-2 max-w-2xl text-sm font-medium leading-6 text-destructive">{error} 다른 PDF를 선택하면 새로 분석합니다.</p>}
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button variant="outline" onClick={() => inputRef.current?.click()}><Upload /> PDF 바꾸기</Button>
@@ -243,6 +280,15 @@ export default function Home() {
                       <div className="flex items-center gap-1"><Button onClick={() => setSelected((value) => Math.max(0, value - 1))} disabled={selected === 0} variant="ghost" size="icon-sm" aria-label="이전 문항"><ChevronLeft /></Button><span className="px-1 text-xs tabular-nums">{selected + 1} / {questionData.length}</span><Button onClick={() => setSelected((value) => Math.min(questionData.length - 1, value + 1))} disabled={selected >= questionData.length - 1} variant="ghost" size="icon-sm" aria-label="다음 문항"><ChevronRight /></Button></div>
                     </div>
                     <div className="divide-y">
+                      {!questionData.length && (
+                        <Empty className="min-h-[360px] border-0">
+                          <EmptyHeader>
+                            <EmptyMedia variant="icon">{status === 'analyzing' ? <LoaderCircle className="animate-spin" /> : <ScanSearch />}</EmptyMedia>
+                            <EmptyTitle>{status === 'analyzing' ? 'PDF를 읽고 있습니다' : '표시할 문항이 없습니다'}</EmptyTitle>
+                            <EmptyDescription>{status === 'analyzing' ? `전체 페이지의 텍스트와 문항 번호를 확인하는 중입니다. ${analysisProgress}%` : '오류 내용을 확인한 뒤 다른 PDF를 선택해 주세요.'}</EmptyDescription>
+                          </EmptyHeader>
+                        </Empty>
+                      )}
                       {questionData.map((question, index) => (
                         <button key={question.number} onClick={() => setSelected(index)} className={`group grid w-full grid-cols-[48px_minmax(0,1fr)] gap-3 p-4 text-left transition sm:grid-cols-[54px_minmax(0,1fr)_auto] ${selected === index ? 'bg-selected' : 'hover:bg-muted/50'}`}>
                           <span className={`grid size-11 place-items-center rounded-2xl text-lg font-extrabold ${selected === index ? 'bg-primary text-white' : 'bg-muted text-foreground'}`}>{String(question.number).padStart(2, '0')}</span>
@@ -261,14 +307,14 @@ export default function Home() {
                     <div className="border-t bg-muted/35 px-4 py-3 text-center text-xs text-muted-foreground">문항 텍스트와 추천 성취기준은 내보내기 전에 직접 수정할 수 있습니다</div>
                   </div>
 
-                  {questionData[selected] && <QuestionInspector question={questionData[selected]} onTextChange={updateSelectedText} />}
+                  {questionData[selected] && <QuestionInspector question={questionData[selected]} standards={courseStandards} onTextChange={updateSelectedText} onStandardChange={updateSelectedStandard} />}
                 </div>
               </TabsContent>
 
               <TabsContent value="standards" className="pt-4">
                 <div className="grid gap-3 md:grid-cols-2">
                   {questionData.map((question) => (
-                    <article key={question.standardCode} className="rounded-2xl border bg-background p-5">
+                    <article key={`${question.standardCode}-${question.number}`} className="rounded-2xl border bg-background p-5">
                       <div className="flex items-start justify-between gap-3"><Badge className="bg-primary/10 text-primary">{question.standardCode}</Badge><span className="text-xs font-semibold text-muted-foreground">{question.confidence}% 일치</span></div>
                       <h2 className="mt-4 font-bold">{question.domain}</h2>
                       <p className="mt-2 text-sm leading-6 text-muted-foreground">{question.standard}</p>
@@ -282,11 +328,15 @@ export default function Home() {
         </div>
       </section>
       <ExportDialog open={exportOpen} onOpenChange={setExportOpen} fileName={fileName} questions={questionData} />
+      <footer className="mx-auto flex max-w-[1540px] flex-col gap-2 px-6 pb-8 text-xs leading-5 text-muted-foreground sm:flex-row sm:justify-between">
+        <span>성취기준 데이터: worksheet-grab · 2022 개정 교육과정</span>
+        <span className="flex flex-wrap gap-x-4"><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/pblsketch/worksheet-grab/tree/090e24e331f779a2e329cf686c5c5444f9221ca9/data" target="_blank" rel="noreferrer">데이터 출처</a><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/jkf87/hwpx-skill" target="_blank" rel="noreferrer">HWPX 구현 참고</a></span>
+      </footer>
     </main>
   );
 }
 
-function QuestionInspector({ question, onTextChange }: { question: AnalyzedQuestion; onTextChange: (text: string) => void }) {
+function QuestionInspector({ question, standards, onTextChange, onStandardChange }: { question: AnalyzedQuestion; standards: StandardRecord[]; onTextChange: (text: string) => void; onStandardChange: (code: string) => void }) {
   return (
     <aside className="overflow-hidden rounded-2xl border bg-background">
       <div className="inspector-head p-5 text-white">
@@ -304,10 +354,8 @@ function QuestionInspector({ question, onTextChange }: { question: AnalyzedQuest
         </div>
         <div className="mt-5">
           <label className="text-xs font-semibold text-muted-foreground">분류 결과 수정</label>
-          <NativeSelect className="mt-2 w-full">
-            <NativeSelectOption>{question.standardCode} · 현재 추천</NativeSelectOption>
-            <NativeSelectOption>[12물리01-02] 뉴턴 운동 법칙</NativeSelectOption>
-            <NativeSelectOption>[12물리01-03] 역학적 에너지</NativeSelectOption>
+          <NativeSelect value={question.standardCode} onChange={(event) => onStandardChange(event.target.value)} className="mt-2 w-full">
+            {standards.map((standard) => <NativeSelectOption key={standard.code} value={standard.code}>{standard.code} · {standard.statement.slice(0, 34)}</NativeSelectOption>)}
           </NativeSelect>
         </div>
         <Button variant="outline" className="mt-3 w-full">이 문항 검토 완료 <Check /></Button>
@@ -317,12 +365,27 @@ function QuestionInspector({ question, onTextChange }: { question: AnalyzedQuest
 }
 
 function ExportDialog({ open, onOpenChange, fileName, questions }: { open: boolean; onOpenChange: (open: boolean) => void; fileName: string; questions: AnalyzedQuestion[] }) {
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState('');
   useEffect(() => {
     if (!open) return;
+    setExportError('');
     const close = (event: KeyboardEvent) => event.key === 'Escape' && onOpenChange(false);
     window.addEventListener('keydown', close);
     return () => window.removeEventListener('keydown', close);
   }, [open, onOpenChange]);
+  async function handleHwpxExport() {
+    setExporting(true);
+    setExportError('');
+    try {
+      await downloadHwpx(fileName, questions);
+      onOpenChange(false);
+    } catch (reason) {
+      setExportError(reason instanceof Error ? reason.message : 'HWPX 생성에 실패했습니다.');
+    } finally {
+      setExporting(false);
+    }
+  }
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/20 p-4 backdrop-blur-sm" onMouseDown={() => onOpenChange(false)}>
@@ -337,12 +400,13 @@ function ExportDialog({ open, onOpenChange, fileName, questions }: { open: boole
             <strong className="mt-4 block">Word 문서</strong>
             <span className="mt-1 block text-xs leading-5 text-muted-foreground">DOCX · 문항별 문서화</span>
           </button>
-          <button onClick={() => { downloadHwpx(fileName, questions); onOpenChange(false); }} className="group rounded-2xl border p-4 text-left transition hover:border-primary hover:bg-primary/5">
+          <button disabled={exporting} onClick={() => void handleHwpxExport()} className="group rounded-2xl border p-4 text-left transition hover:border-primary hover:bg-primary/5 disabled:opacity-60">
             <span className="grid size-10 place-items-center rounded-xl bg-emerald-50 text-emerald-700"><FileDown className="size-5" /></span>
-            <div className="mt-4 flex items-center gap-2"><strong>한글 문서</strong><Badge variant="secondary" className="text-[10px]">베타</Badge></div>
-            <span className="mt-1 block text-xs leading-5 text-muted-foreground">HWPX · 한글 2020 이상</span>
+            <div className="mt-4 flex items-center gap-2"><strong>한글 문서</strong><Badge variant="secondary" className="text-[10px]">검증 템플릿</Badge></div>
+            <span className="mt-1 block text-xs leading-5 text-muted-foreground">{exporting ? 'HWPX 조립 중…' : 'HWPX · 한글 2020 이상'}</span>
           </button>
         </div>
+        {exportError && <p role="alert" className="pb-2 text-xs font-medium text-destructive">{exportError}</p>}
         <div className="-mx-5 -mb-5 mt-2 flex items-center gap-2 rounded-b-2xl border-t bg-muted/50 p-4">
           <p className="mr-auto self-center text-xs text-muted-foreground">총 {questions.length}개 문항</p>
           <Button variant="outline" onClick={() => onOpenChange(false)}>취소</Button>
