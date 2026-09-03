@@ -4,6 +4,7 @@ import type { AnalyzedQuestion } from './pdf-analysis';
 // skeleton. Full attribution and pinned revisions are in THIRD_PARTY_NOTICES.md.
 
 type ZipEntry = { name: string; data: Uint8Array };
+type EmbeddedPageImage = { itemId: string; fileName: string; data: Uint8Array };
 const encoder = new TextEncoder();
 
 export function downloadDocx(title: string, questions: AnalyzedQuestion[]) {
@@ -11,18 +12,22 @@ export function downloadDocx(title: string, questions: AnalyzedQuestion[]) {
 }
 
 export function createDocxBytes(title: string, questions: AnalyzedQuestion[]) {
-  const body = questions.map((question) => `
+  const images = collectPageImages(questions);
+  const body = questions.map((question, index) => `
     <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>${xml(`${question.number}번 문항`)}</w:t></w:r></w:p>
     <w:p><w:r><w:t xml:space="preserve">${xml(question.text)}</w:t></w:r></w:p>
     <w:p><w:pPr><w:pStyle w:val="Standard"/></w:pPr><w:r><w:t>${xml(`${question.standardCode} ${question.domain}`)}</w:t></w:r></w:p>
-    <w:p><w:r><w:t>${xml(question.standard)}</w:t></w:r></w:p>`).join('');
+    <w:p><w:r><w:t>${xml(question.standard)}</w:t></w:r></w:p>
+    ${images.byQuestion.get(index) ? `<w:p><w:r><w:rPr><w:b/><w:color w:val="64748B"/></w:rPr><w:t>원문 페이지 캡처</w:t></w:r></w:p>${docxImageParagraph(`rId${index + 2}`, index + 1)}` : ''}`).join('');
   const sourceNotice = '<w:p><w:r><w:rPr><w:color w:val="64748B"/><w:sz w:val="18"/></w:rPr><w:t>성취기준 출처: pblsketch/worksheet-grab (2022 개정 교육과정)</w:t></w:r></w:p>';
+  const imageRelationships = [...images.byQuestion.entries()].map(([index, image]) => `<Relationship Id="rId${index + 2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${image.fileName}"/>`).join('');
   const entries: ZipEntry[] = [
-    entry('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`),
+    entry('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="jpg" ContentType="image/jpeg"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`),
     entry('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`),
-    entry('word/_rels/document.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`),
+    entry('word/_rels/document.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>${imageRelationships}</Relationships>`),
     entry('word/styles.xml', docxStyles()),
-    entry('word/document.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>${xml(title)}</w:t></w:r></w:p><w:p><w:r><w:t>${xml(`문항 ${questions.length}개 · 성취기준별 자동 분류`)}</w:t></w:r></w:p>${body}${sourceNotice}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134"/></w:sectPr></w:body></w:document>`),
+    entry('word/document.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body><w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>${xml(title)}</w:t></w:r></w:p><w:p><w:r><w:t>${xml(`문항 ${questions.length}개 · 성취기준별 자동 분류`)}</w:t></w:r></w:p>${body}${sourceNotice}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134"/></w:sectPr></w:body></w:document>`),
+    ...images.unique.map((image) => ({ name: `word/media/${image.fileName}`, data: image.data })),
   ];
   return zip(entries);
 }
@@ -59,21 +64,27 @@ export function createHwpxBytesFromTemplate(title: string, questions: AnalyzedQu
   const decoder = new TextDecoder();
   const baseSection = decoder.decode(requiredTemplatePart(template, 'Contents/section0.xml'));
   const baseContent = decoder.decode(requiredTemplatePart(template, 'Contents/content.hpf'));
-  const section = makeHwpxSection(baseSection, title, questions);
+  const images = collectPageImages(questions);
+  const section = makeHwpxSection(baseSection, title, questions, images.byQuestion);
+  const imageManifest = images.unique.map((image) => `<opf:item id="${image.itemId}" href="BinData/${image.fileName}" media-type="image/jpeg" isEmbeded="1"/>`).join('');
   const content = baseContent
     .replace('<opf:title/>', `<opf:title>${xml(title)}</opf:title>`)
     .replace('name="creator" content="text"', 'name="creator" content="문항맵"')
-    .replace('name="lastsaveby" content="text"', 'name="lastsaveby" content="문항맵"');
-  const preview = [title, `문항 ${questions.length}개 · 성취기준별 자동 분류`, ...questions.flatMap((question) => [`${question.number}번 문항`, question.text, question.standardCode, question.standard]), '성취기준 출처: pblsketch/worksheet-grab'].join('\n');
+    .replace('name="lastsaveby" content="text"', 'name="lastsaveby" content="문항맵"')
+    .replace('</opf:manifest>', `${imageManifest}</opf:manifest>`);
+  const preview = [title, `문항 ${questions.length}개 · 성취기준별 자동 분류`, ...questions.flatMap((question) => [`${question.number}번 문항`, question.text, question.standardCode, question.standard, question.pageImage ? '[원문 페이지 캡처 포함]' : '']), '성취기준 출처: pblsketch/worksheet-grab'].join('\n');
   const replacements = new Map<string, Uint8Array>([
     ['Contents/section0.xml', encoder.encode(section)],
     ['Contents/content.hpf', encoder.encode(content)],
     ['Preview/PrvText.txt', encoder.encode(preview)],
   ]);
-  return zip(hwpxTemplatePaths.map((name) => ({ name, data: replacements.get(name) ?? requiredTemplatePart(template, name) })));
+  return zip([
+    ...hwpxTemplatePaths.map((name) => ({ name, data: replacements.get(name) ?? requiredTemplatePart(template, name) })),
+    ...images.unique.map((image) => ({ name: `BinData/${image.fileName}`, data: image.data })),
+  ]);
 }
 
-function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestion[]) {
+function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestion[], images: Map<number, EmbeddedPageImage>) {
   const open = base.match(/<hs:sec\b[^>]*>/)?.[0];
   const first = base.match(/<hp:p\b[\s\S]*?<\/hp:p>/)?.[0]
     ?.replace(/<hp:linesegarray>[\s\S]*?<\/hp:linesegarray>/g, '')
@@ -82,11 +93,16 @@ function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestio
   let id = 2;
   const paragraph = (text: string, charPr = '0') => `<hp:p id="${id++}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="${charPr}"><hp:t>${xml(text)}</hp:t></hp:run></hp:p>`;
   const parts = [first, paragraph(title, '5'), paragraph(`문항 ${questions.length}개 · 성취기준별 자동 분류`, '6'), paragraph('')];
-  for (const question of questions) {
+  for (const [index, question] of questions.entries()) {
     parts.push(paragraph(`${question.number}번 문항`, '6'));
     for (const line of question.text.split(/\r?\n/).filter(Boolean)) parts.push(paragraph(line));
     parts.push(paragraph(`${question.standardCode}  ${question.domain}`, '6'));
     parts.push(paragraph(`- ${question.standard}`));
+    const image = images.get(index);
+    if (image) {
+      parts.push(paragraph('원문 페이지 캡처', '2'));
+      parts.push(hwpxImageParagraph(id++, image.itemId, 10000 + index * 2, 10001 + index * 2));
+    }
     parts.push(paragraph(''));
   }
   parts.push(paragraph('성취기준 출처: pblsketch/worksheet-grab (2022 개정 교육과정)', '2'));
@@ -97,6 +113,44 @@ function requiredTemplatePart(template: Map<string, Uint8Array>, name: string) {
   const part = template.get(name);
   if (!part) throw new Error(`HWPX 템플릿 파트 누락: ${name}`);
   return part;
+}
+
+function collectPageImages(questions: AnalyzedQuestion[]) {
+  const unique: EmbeddedPageImage[] = [];
+  const byDataUrl = new Map<string, EmbeddedPageImage>();
+  const byQuestion = new Map<number, EmbeddedPageImage>();
+  questions.forEach((question, index) => {
+    if (!question.pageImage?.startsWith('data:image/jpeg;base64,')) return;
+    let image = byDataUrl.get(question.pageImage);
+    if (!image) {
+      const number = unique.length + 1;
+      image = { itemId: `image${number}`, fileName: `page${number}.jpg`, data: dataUrlBytes(question.pageImage) };
+      unique.push(image);
+      byDataUrl.set(question.pageImage, image);
+    }
+    byQuestion.set(index, image);
+  });
+  return { unique, byQuestion };
+}
+
+function dataUrlBytes(dataUrl: string) {
+  const encoded = dataUrl.slice(dataUrl.indexOf(',') + 1);
+  const decoded = atob(encoded);
+  const bytes = new Uint8Array(decoded.length);
+  for (let index = 0; index < decoded.length; index += 1) bytes[index] = decoded.charCodeAt(index);
+  return bytes;
+}
+
+function docxImageParagraph(relationshipId: string, imageId: number) {
+  const width = 4480560;
+  const height = 6336460;
+  return `<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${width}" cy="${height}"/><wp:docPr id="${imageId}" name="PDF 원문 페이지 ${imageId}"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="${imageId}" name="page${imageId}.jpg"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relationshipId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${width}" cy="${height}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+}
+
+function hwpxImageParagraph(paragraphId: number, itemId: string, pictureId: number, instanceId: number) {
+  const width = 40000;
+  const height = 56568;
+  return `<hp:p id="${paragraphId}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:pic id="${pictureId}" zOrder="0" numberingType="PICTURE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="${instanceId}" reverse="0"><hp:offset x="0" y="0"/><hp:orgSz width="${width}" height="${height}"/><hp:curSz width="${width}" height="${height}"/><hp:flip horizontal="0" vertical="0"/><hp:rotationInfo angle="0" centerX="${width / 2}" centerY="${height / 2}" rotateimage="0"/><hp:renderingInfo><hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/></hp:renderingInfo><hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="${width}" y="0"/><hc:pt2 x="${width}" y="${height}"/><hc:pt3 x="0" y="${height}"/></hp:imgRect><hp:imgClip left="0" right="${width}" top="0" bottom="${height}"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:imgDim dimwidth="${width}" dimheight="${height}"/><hc:img binaryItemIDRef="${itemId}" bright="0" contrast="0" effect="REAL_PIC" alpha="0"/><hp:effects/><hp:sz width="${width}" widthRelTo="ABSOLUTE" height="${height}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="CENTER" vertOffset="0" horzOffset="0"/><hp:outMargin left="0" right="0" top="0" bottom="0"/><hp:shapeComment>PDF 원문 페이지 캡처</hp:shapeComment></hp:pic></hp:run></hp:p>`;
 }
 
 function docxStyles() {

@@ -21,6 +21,7 @@ export type AnalyzedQuestion = {
   domain: string;
   standardCandidates?: StandardCandidate[];
   subjectCandidates?: SubjectCandidate[];
+  pageImage?: string;
 };
 
 // The curriculum catalogue is the pinned worksheet-grab dataset documented in
@@ -61,11 +62,12 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
   const source = new Uint8Array(await file.arrayBuffer());
   const pdf = await pdfjs.getDocument({ data: source }).promise;
   const pages: string[][] = [];
+  const pageImages: string[] = [];
 
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     const page = await pdf.getPage(pageNumber);
     const viewport = page.getViewport({ scale: 1 });
-    const content = await page.getTextContent();
+    const [content, pageImage] = await Promise.all([page.getTextContent(), renderPageCapture(page)]);
     const positioned: PositionedText[] = content.items
       .filter((item): item is typeof item & { str: string; transform: number[]; width?: number } => 'str' in item && 'transform' in item && Boolean(item.str.trim()))
       .map((item) => ({
@@ -75,6 +77,8 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
         width: typeof item.width === 'number' ? item.width : 0,
       }));
     pages.push(buildReadingOrder(positioned, viewport.width));
+    pageImages.push(pageImage);
+    page.cleanup();
     onProgress?.(pageNumber, pdf.numPages);
   }
 
@@ -99,8 +103,23 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
       standard: '',
       confidence: 0,
       domain: '',
+      pageImage: pageImages[chunk.page - 1],
     }, allStandards)),
   };
+}
+
+async function renderPageCapture(page: PDFPageProxy) {
+  const viewport = page.getViewport({ scale: 1.3 });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  const context = canvas.getContext('2d', { alpha: false });
+  if (!context) return '';
+  await page.render({ canvasContext: context, viewport }).promise;
+  const image = canvas.toDataURL('image/jpeg', 0.84);
+  canvas.width = 1;
+  canvas.height = 1;
+  return image;
 }
 
 export function classifyQuestion(question: AnalyzedQuestion, catalog: StandardRecord[], subjectKey?: string): AnalyzedQuestion {
@@ -258,3 +277,4 @@ export function parseStandardsCsv(csv: string): StandardRecord[] {
     statement: values[4]?.trim(),
   })).filter((record) => record.school && record.subject && record.code && record.statement);
 }
+import type { PDFPageProxy } from 'pdfjs-dist';

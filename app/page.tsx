@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import {
   ArrowRight,
   Check,
@@ -43,6 +43,8 @@ import {
   type StandardRecord,
 } from '@/lib/pdf-analysis';
 import { downloadDocx, downloadHwpx } from '@/lib/document-export';
+
+const MathText = lazy(() => import('@/components/math-text'));
 
 const sampleQuestions: AnalyzedQuestion[] = [
   {
@@ -365,7 +367,7 @@ export default function Home() {
       <ExportDialog open={exportOpen} onOpenChange={setExportOpen} fileName={fileName} questions={questionData} />
       <footer className="mx-auto flex max-w-[1540px] flex-col gap-2 px-6 pb-8 text-xs leading-5 text-muted-foreground sm:flex-row sm:justify-between">
         <span>성취기준 데이터: worksheet-grab · 2022 개정 교육과정</span>
-        <span className="flex flex-wrap gap-x-4"><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/pblsketch/worksheet-grab/tree/090e24e331f779a2e329cf686c5c5444f9221ca9/data" target="_blank" rel="noreferrer">데이터 출처</a><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/jkf87/hwpx-skill" target="_blank" rel="noreferrer">HWPX 구현 참고</a></span>
+        <span className="flex flex-wrap gap-x-4"><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/pblsketch/worksheet-grab/tree/090e24e331f779a2e329cf686c5c5444f9221ca9/data" target="_blank" rel="noreferrer">데이터 출처</a><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/jkf87/hwpx-skill" target="_blank" rel="noreferrer">HWPX 구현 참고</a><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/KaTeX/KaTeX" target="_blank" rel="noreferrer">KaTeX</a></span>
       </footer>
     </main>
   );
@@ -386,6 +388,16 @@ function QuestionInspector({ question, canMerge, onTextChange, onStandardChange,
   const subjectCandidates = question.subjectCandidates ?? [{ key: question.domain.replace(' · ', '|'), label: question.domain, confidence: question.confidence }];
   const standardCandidates = question.standardCandidates ?? [{ code: question.standardCode, standard: question.standard, domain: question.domain, confidence: question.confidence }];
   const selectedSubject = subjectCandidates.find((candidate) => candidate.label === question.domain)?.key ?? subjectCandidates[0]?.key ?? '';
+  function insertLatex(value: string) {
+    const position = textRef.current?.selectionStart ?? question.text.length;
+    onTextChange(`${question.text.slice(0, position)}${value}${question.text.slice(position)}`);
+    const nextPosition = position + value.length;
+    requestAnimationFrame(() => {
+      textRef.current?.focus();
+      textRef.current?.setSelectionRange(nextPosition, nextPosition);
+      setCursor(nextPosition);
+    });
+  }
   return (
     <aside className="overflow-hidden rounded-2xl border bg-background">
       <div className="inspector-head p-5 text-white">
@@ -395,11 +407,28 @@ function QuestionInspector({ question, canMerge, onTextChange, onStandardChange,
       </div>
       <div className="p-5">
         <Textarea ref={textRef} aria-label="문항 텍스트" value={question.text} onChange={(event) => onTextChange(event.target.value)} onSelect={(event) => setCursor(event.currentTarget.selectionStart)} className="min-h-40 resize-y border-0 bg-transparent p-0 text-sm leading-6 shadow-none focus-visible:ring-0" />
+        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-xs font-semibold text-muted-foreground">LaTeX 삽입</span>
+          <Button variant="outline" size="sm" onClick={() => insertLatex('$\\frac{a}{b}$')}>분수</Button>
+          <Button variant="outline" size="sm" onClick={() => insertLatex('$x^{2}$')}>제곱</Button>
+          <Button variant="outline" size="sm" onClick={() => insertLatex('$\\sqrt{x}$')}>루트</Button>
+          <Button variant="outline" size="sm" onClick={() => insertLatex('$60\\,\\mathrm{km/h}$')}>단위</Button>
+        </div>
+        <div className="mt-3 rounded-xl border bg-muted/35 p-3">
+          <p className="mb-2 text-xs font-semibold text-muted-foreground">수식 미리보기</p>
+          <Suspense fallback={<p className="text-sm text-muted-foreground">수식 렌더러를 불러오는 중…</p>}><MathText text={question.text} /></Suspense>
+        </div>
         <div className="mt-3 grid grid-cols-2 gap-2">
           <Button variant="outline" size="sm" disabled={cursor < 8 || cursor > question.text.length - 8} onClick={() => onSplit(cursor)}>커서에서 문항 나누기</Button>
           <Button variant="outline" size="sm" disabled={!canMerge} onClick={onMerge}>이전 문항과 합치기</Button>
         </div>
         <p className="mt-2 text-xs leading-5 text-muted-foreground">경계가 틀리면 새 문항이 시작되는 위치에 커서를 놓고 나누세요.</p>
+        {question.pageImage && (
+          <details className="mt-4 overflow-hidden rounded-xl border" open>
+            <summary className="cursor-pointer bg-muted/50 px-3 py-2 text-xs font-semibold text-muted-foreground">원문 페이지 캡처 · 그림과 깨진 숫자 확인</summary>
+            <img src={question.pageImage} alt={`${question.number}번 문항이 포함된 PDF 원문 페이지`} className="h-auto w-full bg-white object-contain" />
+          </details>
+        )}
         <div className="my-5 h-px bg-border" />
         <div>
           <label className="text-xs font-semibold text-muted-foreground">이 문항의 교과 후보</label>
