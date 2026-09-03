@@ -1,0 +1,27 @@
+appId: kr.co.munhangmap.desktop
+productName: 문항맵
+electronVersion: 38.8.6
+asar: true
+directories:
+  output: ../release
+files:
+  - '**/*'
+  - '!electron-builder.yml'
+  - '!build/icon.iconset/**/*'
+electronLanguages:
+  - ko
+  - en-US
+mac:
+  icon: build/icon.png
+  category: public.app-category.education
+  target:
+    - dmg
+win:
+  icon: build/icon.png
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true

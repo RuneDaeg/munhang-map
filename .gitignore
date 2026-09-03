@@ -37,4 +37,6 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+/release/
+/desktop/build/icon.iconset/
 *.tsbuildinfo

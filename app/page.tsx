@@ -92,6 +92,7 @@ export default function Home() {
   const [standards, setStandards] = useState<StandardRecord[]>([]);
   const [visionAvailable, setVisionAvailable] = useState(false);
   const [visionModel, setVisionModel] = useState('');
+  const [desktopMode, setDesktopMode] = useState(false);
   const [visionProgress, setVisionProgress] = useState('');
   const [visionError, setVisionError] = useState('');
   const [recognizingQuestion, setRecognizingQuestion] = useState<number | null>(null);
@@ -104,9 +105,10 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    void getVisionStatus().then(({ available, model }) => {
+    void getVisionStatus().then(({ available, model, desktop }) => {
       setVisionAvailable(available);
       setVisionModel(model);
+      setDesktopMode(Boolean(desktop));
     }).catch(() => undefined);
   }, []);
 
@@ -165,9 +167,10 @@ export default function Home() {
       if (!result.questions.length) throw new Error('문항을 찾지 못했습니다. 텍스트가 포함된 모의고사 PDF인지 확인해 주세요.');
       setPageCount(result.pageCount);
       setQuestionData(result.questions);
-      const vision = await getVisionStatus().catch(() => ({ available: false, model: '' }));
+      const vision = await getVisionStatus().catch(() => ({ available: false, model: '', desktop: false }));
       setVisionAvailable(vision.available);
       setVisionModel(vision.model);
+      setDesktopMode(Boolean(vision.desktop));
       let finalQuestions = result.questions;
       let warning = result.qualityWarning;
       if (vision.available) {
@@ -231,7 +234,8 @@ export default function Home() {
       const status = await getVisionStatus();
       setVisionAvailable(status.available);
       setVisionModel(status.model);
-      if (!status.available) throw new Error('로컬 .env.local에 OPENAI_API_KEY를 설정한 뒤 개발 서버를 다시 시작해 주세요.');
+      setDesktopMode(Boolean(status.desktop));
+      if (!status.available) throw new Error(status.desktop ? '앱을 다시 열고 OpenAI API 키를 입력해 주세요.' : '로컬 .env.local에 OPENAI_API_KEY를 설정한 뒤 개발 서버를 다시 시작해 주세요.');
       const result = await enhanceQuestionsWithVision([question]);
       if (result.failures.length) throw new Error(result.failures[0]);
       const catalog = standards.length ? standards : await loadAchievementStandards();
@@ -330,7 +334,7 @@ export default function Home() {
                 <span className={`size-2 rounded-full ${visionAvailable ? 'bg-emerald-400' : 'bg-amber-300'}`} />
                 <p className="text-xs font-semibold text-white/80">자동 수식·그림 인식 {visionAvailable ? '사용 중' : '로컬 키 필요'}</p>
               </div>
-              <p className="mt-1 text-xs leading-5 text-white/50">{visionAvailable ? `${visionModel} · PDF 페이지별 자동 판독` : '.env.local에 OPENAI_API_KEY를 설정하면 활성화됩니다.'}</p>
+              <p className="mt-1 text-xs leading-5 text-white/50">{visionAvailable ? `${visionModel} · PDF 페이지별 자동 판독` : desktopMode ? '앱을 다시 열고 시작 화면에서 API 키를 입력하세요.' : '.env.local에 OPENAI_API_KEY를 설정하면 활성화됩니다.'}</p>
             </div>
           </div>
 

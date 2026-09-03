@@ -29,3 +29,17 @@ pnpm dev
 ```
 
 `OPENAI_API_KEY`는 서버 환경에서만 읽으며 브라우저 저장소나 저장소 소스에 포함하지 않습니다. 키를 설정하지 않아도 기본 PDF 문항 추출, 수동 LaTeX 보정, 문항 분리·병합과 내보내기는 사용할 수 있습니다. 자동 인식을 켜면 분석 대상 PDF 페이지 이미지가 설정한 OpenAI API로 전송되며 API 사용량에 따른 비용이 발생할 수 있습니다.
+
+## 데스크톱 앱
+
+Electron 데스크톱 앱은 실행할 때 API 키 입력 화면을 먼저 표시합니다. 입력한 키는 앱의 메인 프로세스 메모리에만 보관하며 디스크, 브라우저 저장소 또는 문항맵 서버로 전송하지 않습니다. 앱을 종료하면 키가 사라집니다. 문항맵 화면과 OpenAI API 사용에는 인터넷 연결이 필요합니다.
+
+```bash
+# 현재 Mac용 DMG 생성
+pnpm desktop:mac
+
+# 64비트 Windows용 설치 EXE 생성
+pnpm desktop:win
+```
+
+생성된 설치 파일은 `release/` 폴더에 저장됩니다. `.github/workflows/desktop-build.yml`은 macOS와 Windows에서 각각 설치 파일을 생성해 Actions 아티팩트로 보관합니다. 배포용 설치 파일에는 별도의 Apple Developer 서명·공증 및 Windows 코드 서명을 적용하는 것을 권장합니다.

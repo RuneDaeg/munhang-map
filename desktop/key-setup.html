@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>문항맵 API 키 설정</title>
+    <style>
+      :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #eef6fb; color: #102638; }
+      main { width: min(420px, calc(100vw - 32px)); padding: 30px; border: 1px solid #d6e4ed; border-radius: 24px; background: white; box-shadow: 0 24px 70px rgba(23, 57, 79, .16); }
+      .mark { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 15px; background: #075486; color: white; font-weight: 800; font-size: 20px; }
+      h1 { margin: 22px 0 8px; font-size: 24px; letter-spacing: -.04em; }
+      p { margin: 0; color: #587082; font-size: 14px; line-height: 1.65; }
+      label { display: block; margin-top: 24px; font-size: 13px; font-weight: 700; }
+      input { width: 100%; margin-top: 8px; padding: 13px 14px; border: 1px solid #c9d9e3; border-radius: 12px; font: inherit; }
+      input:focus { outline: 3px solid #bfe4f6; border-color: #1477aa; }
+      .hint { margin-top: 9px; font-size: 12px; }
+      .actions { display: grid; grid-template-columns: 1fr 1.5fr; gap: 10px; margin-top: 24px; }
+      button { min-height: 44px; border: 0; border-radius: 12px; font: inherit; font-weight: 700; cursor: pointer; }
+      button[type="button"] { background: #edf2f5; color: #405866; }
+      button[type="submit"] { background: #075486; color: white; }
+      #error { min-height: 20px; margin-top: 10px; color: #b42318; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark">문</div>
+      <h1>문항맵을 시작합니다</h1>
+      <p>자동 수식·그림 인식을 사용하려면 OpenAI API 키를 입력하세요. 키는 이 컴퓨터의 앱 메모리에만 보관되며 앱을 닫으면 사라집니다.</p>
+      <form id="form">
+        <label for="api-key">OpenAI API 키</label>
+        <input id="api-key" name="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" autofocus />
+        <p class="hint">키 없이 시작해도 PDF 기본 추출과 문서 내보내기를 사용할 수 있습니다.</p>
+        <div class="actions">
+          <button id="skip" type="button">키 없이 시작</button>
+          <button type="submit">키를 사용해 시작</button>
+        </div>
+        <p id="error" role="alert"></p>
+      </form>
+    </main>
+    <script>
+      const form = document.querySelector('#form');
+      const input = document.querySelector('#api-key');
+      const error = document.querySelector('#error');
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        error.textContent = '';
+        const result = await window.munhangDesktop.setApiKey(input.value);
+        if (!result.ok) error.textContent = result.error;
+      });
+      document.querySelector('#skip').addEventListener('click', () => window.munhangDesktop.skipApiKey());
+    </script>
+  </body>
+</html>

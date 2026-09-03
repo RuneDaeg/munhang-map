@@ -7,10 +7,25 @@ type VisionItem = {
   figureBox: [number, number, number, number] | null;
 };
 
-export async function getVisionStatus() {
+type DesktopBridge = {
+  isDesktop: true;
+  platform: string;
+  getVisionStatus: () => Promise<{ available: boolean; model: string; desktop?: boolean }>;
+  recognize: (body: { image: string; questions: Array<{ number: number; text: string }> }) => Promise<{ questions?: VisionItem[]; error?: string }>;
+};
+
+function desktopBridge() {
+  if (typeof window === 'undefined') return undefined;
+  return (window as Window & { munhangDesktop?: DesktopBridge }).munhangDesktop;
+}
+
+export async function getVisionStatus(): Promise<{ available: boolean; model: string; desktop?: boolean }> {
+  const desktop = desktopBridge();
+  if (desktop) return desktop.getVisionStatus();
   const response = await fetch('/api/recognize');
-  if (!response.ok) return { available: false, model: '' };
-  return response.json() as Promise<{ available: boolean; model: string }>;
+  if (!response.ok) return { available: false, model: '', desktop: false };
+  const status = await response.json() as { available: boolean; model: string };
+  return { ...status, desktop: false };
 }
 
 export async function enhanceQuestionsWithVision(
@@ -30,13 +45,21 @@ export async function enhanceQuestionsWithVision(
   let completed = 0;
   for (const [image, group] of groups) {
     try {
-      const response = await fetch('/api/recognize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image, questions: group.map(({ question }) => ({ number: question.number, text: question.text })) }),
-      });
-      const result = await response.json() as { questions?: VisionItem[]; error?: string };
-      if (!response.ok || !result.questions) throw new Error(result.error ?? '비전 분석에 실패했습니다.');
+      const requestBody = { image, questions: group.map(({ question }) => ({ number: question.number, text: question.text })) };
+      const desktop = desktopBridge();
+      let result: { questions?: VisionItem[]; error?: string };
+      if (desktop) {
+        result = await desktop.recognize(requestBody);
+      } else {
+        const response = await fetch('/api/recognize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+        });
+        result = await response.json() as { questions?: VisionItem[]; error?: string };
+        if (!response.ok) throw new Error(result.error ?? '비전 분석에 실패했습니다.');
+      }
+      if (!result.questions) throw new Error(result.error ?? '비전 분석에 실패했습니다.');
       await Promise.all(group.map(async ({ index, question }) => {
         const recognized = result.questions?.find((item) => item.number === question.number);
         if (!recognized) return;
