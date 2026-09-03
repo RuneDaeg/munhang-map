@@ -78,13 +78,19 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
     onProgress?.(pageNumber, pdf.numPages);
   }
 
-  if (pages.flat().join('').length < 40) {
+  const extractedText = pages.flat().join('');
+  if (extractedText.length < 40) {
     throw new Error('이 PDF는 스캔 이미지로 구성되어 텍스트를 읽을 수 없습니다. OCR 기능이 필요한 문서입니다.');
   }
+  const brokenGlyphCount = (extractedText.match(/[�▤▥▦▧▨▩▒▓■]{1}/g) ?? []).length;
+  const qualityWarning = brokenGlyphCount / extractedText.length > 0.008
+    ? 'PDF 글꼴 또는 그림 일부가 깨진 문자로 추출되었습니다. 후보를 확정하기 전에 문항 텍스트를 확인하거나 OCR 처리된 PDF를 사용해 주세요.'
+    : '';
 
   const chunks = splitIntoQuestions(pages);
   return {
     pageCount: pdf.numPages,
+    qualityWarning,
     questions: chunks.slice(0, 80).map((chunk) => classifyQuestion({
       number: chunk.number,
       type: `자동 추출 문항 · ${chunk.page}쪽`,

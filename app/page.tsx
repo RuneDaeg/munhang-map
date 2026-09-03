@@ -82,6 +82,7 @@ export default function Home() {
   const [pageCount, setPageCount] = useState(24);
   const [status, setStatus] = useState<'ready' | 'analyzing' | 'error'>('ready');
   const [error, setError] = useState('');
+  const [qualityWarning, setQualityWarning] = useState('');
   const [exportOpen, setExportOpen] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
   const [isDemo, setIsDemo] = useState(true);
@@ -140,11 +141,13 @@ export default function Home() {
     setAnalysisProgress(0);
     setIsDemo(false);
     setError('');
+    setQualityWarning('');
     setSelected(0);
     try {
       const result = await analyzePdf(file, (page, total) => setAnalysisProgress(Math.round((page / total) * 100)));
       if (!result.questions.length) throw new Error('문항을 찾지 못했습니다. 텍스트가 포함된 모의고사 PDF인지 확인해 주세요.');
       setPageCount(result.pageCount);
+      setQualityWarning(result.qualityWarning);
       setQuestionData(result.questions);
       setStatus('ready');
     } catch (reason) {
@@ -284,6 +287,7 @@ export default function Home() {
                 <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">{status === 'analyzing' ? <LoaderCircle className="size-4 animate-spin text-primary" /> : <ScanSearch className="size-4 text-primary" />} {status === 'analyzing' ? `PDF에서 문항을 찾는 중 · ${analysisProgress}%` : status === 'error' ? '분석을 완료하지 못했습니다' : isDemo ? '예시 분석 결과' : '새 PDF 분석 완료'}</div>
                 <h1 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-[28px]">문항과 성취기준을 확인하세요</h1>
                 {error && <p role="alert" className="mt-2 max-w-2xl text-sm font-medium leading-6 text-destructive">{error} 다른 PDF를 선택하면 새로 분석합니다.</p>}
+                {qualityWarning && <p role="status" className="mt-2 max-w-2xl rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium leading-6 text-amber-800">{qualityWarning}</p>}
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button variant="outline" onClick={() => inputRef.current?.click()}><Upload /> PDF 바꾸기</Button>
