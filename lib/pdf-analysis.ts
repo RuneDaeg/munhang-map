@@ -21,7 +21,9 @@ export type AnalyzedQuestion = {
   domain: string;
   standardCandidates?: StandardCandidate[];
   subjectCandidates?: SubjectCandidate[];
-  pageImage?: string;
+  sourcePageImage?: string;
+  figureImage?: string;
+  visionEnhanced?: boolean;
 };
 
 // The curriculum catalogue is the pinned worksheet-grab dataset documented in
@@ -103,7 +105,7 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
       standard: '',
       confidence: 0,
       domain: '',
-      pageImage: pageImages[chunk.page - 1],
+      sourcePageImage: pageImages[chunk.page - 1],
     }, allStandards)),
   };
 }

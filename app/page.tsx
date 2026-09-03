@@ -43,6 +43,7 @@ import {
   type StandardRecord,
 } from '@/lib/pdf-analysis';
 import { downloadDocx, downloadHwpx } from '@/lib/document-export';
+import { enhanceQuestionsWithVision, getVisionStatus } from '@/lib/vision-recognition';
 
 const MathText = lazy(() => import('@/components/math-text'));
 
@@ -89,11 +90,23 @@ export default function Home() {
   const [analysisProgress, setAnalysisProgress] = useState(0);
   const [isDemo, setIsDemo] = useState(true);
   const [standards, setStandards] = useState<StandardRecord[]>([]);
+  const [visionAvailable, setVisionAvailable] = useState(false);
+  const [visionModel, setVisionModel] = useState('');
+  const [visionProgress, setVisionProgress] = useState('');
+  const [visionError, setVisionError] = useState('');
+  const [recognizingQuestion, setRecognizingQuestion] = useState<number | null>(null);
 
   useEffect(() => {
     void loadAchievementStandards().then((items) => {
       setStandards(items);
       setQuestionData((current) => current.map((question) => classifyQuestion(question, items)));
+    }).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    void getVisionStatus().then(({ available, model }) => {
+      setVisionAvailable(available);
+      setVisionModel(model);
     }).catch(() => undefined);
   }, []);
 
@@ -144,13 +157,39 @@ export default function Home() {
     setIsDemo(false);
     setError('');
     setQualityWarning('');
+    setVisionError('');
+    setVisionProgress('');
     setSelected(0);
     try {
-      const result = await analyzePdf(file, (page, total) => setAnalysisProgress(Math.round((page / total) * 100)));
+      const result = await analyzePdf(file, (page, total) => setAnalysisProgress(Math.round((page / total) * 60)));
       if (!result.questions.length) throw new Error('문항을 찾지 못했습니다. 텍스트가 포함된 모의고사 PDF인지 확인해 주세요.');
       setPageCount(result.pageCount);
-      setQualityWarning(result.qualityWarning);
       setQuestionData(result.questions);
+      const vision = await getVisionStatus().catch(() => ({ available: false, model: '' }));
+      setVisionAvailable(vision.available);
+      setVisionModel(vision.model);
+      let finalQuestions = result.questions;
+      let warning = result.qualityWarning;
+      if (vision.available) {
+        setVisionProgress('수식과 그림자료를 자동 인식하는 중');
+        const enhanced = await enhanceQuestionsWithVision(result.questions, (completed, total) => {
+          setAnalysisProgress(60 + Math.round((completed / Math.max(total, 1)) * 40));
+          setVisionProgress(`수식·그림 자동 인식 · ${completed}/${total}쪽`);
+        });
+        const catalog = standards.length ? standards : await loadAchievementStandards();
+        setStandards(catalog);
+        finalQuestions = enhanced.questions.map((question) => classifyQuestion(question, catalog));
+        if (enhanced.failures.length) {
+          const message = `${enhanced.failures.length}개 페이지는 자동 수식·그림 인식을 완료하지 못했습니다.`;
+          setVisionError(message);
+          warning = [warning, message].filter(Boolean).join(' ');
+        }
+      } else {
+        setAnalysisProgress(100);
+      }
+      setQualityWarning(warning);
+      setQuestionData(finalQuestions);
+      setVisionProgress('');
       setStatus('ready');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'PDF 분석 중 오류가 발생했습니다.');
@@ -159,7 +198,7 @@ export default function Home() {
   }
 
   function updateSelectedText(text: string) {
-    setQuestionData((current) => current.map((question, index) => index === selected ? { ...question, text } : question));
+    setQuestionData((current) => current.map((question, index) => index === selected ? { ...question, text, visionEnhanced: false } : question));
   }
 
   function updateSelectedStandard(code: string) {
@@ -183,6 +222,29 @@ export default function Home() {
     setQuestionData((current) => current.map((question, index) => index === selected ? classifyQuestion(question, standards) : question));
   }
 
+  async function recognizeSelectedQuestion() {
+    const question = questionData[selected];
+    if (!question?.sourcePageImage || recognizingQuestion !== null) return;
+    setRecognizingQuestion(question.number);
+    setVisionError('');
+    try {
+      const status = await getVisionStatus();
+      setVisionAvailable(status.available);
+      setVisionModel(status.model);
+      if (!status.available) throw new Error('로컬 .env.local에 OPENAI_API_KEY를 설정한 뒤 개발 서버를 다시 시작해 주세요.');
+      const result = await enhanceQuestionsWithVision([question]);
+      if (result.failures.length) throw new Error(result.failures[0]);
+      const catalog = standards.length ? standards : await loadAchievementStandards();
+      setStandards(catalog);
+      const enhanced = classifyQuestion(result.questions[0], catalog);
+      setQuestionData((current) => current.map((item, index) => index === selected ? enhanced : item));
+    } catch (reason) {
+      setVisionError(reason instanceof Error ? reason.message : '자동 인식을 완료하지 못했습니다.');
+    } finally {
+      setRecognizingQuestion(null);
+    }
+  }
+
   function splitSelectedQuestion(position: number) {
     const question = questionData[selected];
     if (!question || position < 8 || position > question.text.length - 8) return;
@@ -191,8 +253,8 @@ export default function Home() {
     const marker = secondText.match(/^(\d{1,2})\s*[.)]\s*/);
     const secondNumber = marker ? Number(marker[1]) : question.number + 1;
     if (marker) secondText = secondText.slice(marker[0].length).trim();
-    const first = classifyQuestion({ ...question, text: firstText }, standards);
-    const second = classifyQuestion({ ...question, number: secondNumber, text: secondText, type: question.type.replace('자동 추출', '수동 분리') }, standards);
+    const first = classifyQuestion({ ...question, text: firstText, figureImage: undefined, visionEnhanced: false }, standards);
+    const second = classifyQuestion({ ...question, number: secondNumber, text: secondText, figureImage: undefined, visionEnhanced: false, type: question.type.replace('자동 추출', '수동 분리') }, standards);
     setQuestionData((current) => [...current.slice(0, selected), first, second, ...current.slice(selected + 1)]);
     setSelected(selected + 1);
   }
@@ -201,7 +263,7 @@ export default function Home() {
     if (selected === 0) return;
     const previous = questionData[selected - 1];
     const current = questionData[selected];
-    const merged = classifyQuestion({ ...previous, text: `${previous.text}\n${current.number}. ${current.text}`, type: previous.type.replace('자동 추출', '수동 병합') }, standards);
+    const merged = classifyQuestion({ ...previous, text: `${previous.text}\n${current.number}. ${current.text}`, figureImage: undefined, visionEnhanced: false, type: previous.type.replace('자동 추출', '수동 병합') }, standards);
     setQuestionData((items) => [...items.slice(0, selected - 1), merged, ...items.slice(selected + 1)]);
     setSelected(selected - 1);
   }
@@ -263,6 +325,13 @@ export default function Home() {
               <p className="text-xs font-semibold text-white/80">교과는 문항별로 추천됩니다</p>
               <p className="mt-1 text-xs leading-5 text-white/50">각 문항에서 관련성이 높은 교과 후보만 확인하고 선택할 수 있습니다.</p>
             </div>
+            <div className="rounded-xl border border-white/10 bg-white/6 p-3">
+              <div className="flex items-center gap-2">
+                <span className={`size-2 rounded-full ${visionAvailable ? 'bg-emerald-400' : 'bg-amber-300'}`} />
+                <p className="text-xs font-semibold text-white/80">자동 수식·그림 인식 {visionAvailable ? '사용 중' : '로컬 키 필요'}</p>
+              </div>
+              <p className="mt-1 text-xs leading-5 text-white/50">{visionAvailable ? `${visionModel} · PDF 페이지별 자동 판독` : '.env.local에 OPENAI_API_KEY를 설정하면 활성화됩니다.'}</p>
+            </div>
           </div>
 
           <div className="mt-7 border-t border-white/10 pt-5">
@@ -278,7 +347,7 @@ export default function Home() {
           </div>
 
           <div className="mt-auto hidden pt-8 lg:block">
-            <p className="flex items-center gap-2 text-xs text-white/45"><Sparkles className="size-3.5 text-accent" /> PDF는 이 브라우저에서만 처리됩니다</p>
+            <p className="flex items-start gap-2 text-xs leading-5 text-white/45"><Sparkles className="mt-0.5 size-3.5 shrink-0 text-accent" /> 기본 추출은 브라우저에서, 자동 인식 사용 시 페이지 이미지는 설정한 OpenAI API로 처리됩니다</p>
           </div>
         </aside>
 
@@ -286,10 +355,11 @@ export default function Home() {
           <div className="flex flex-col gap-4 rounded-[22px] border bg-card p-4 shadow-sm sm:p-5">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <div>
-                <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">{status === 'analyzing' ? <LoaderCircle className="size-4 animate-spin text-primary" /> : <ScanSearch className="size-4 text-primary" />} {status === 'analyzing' ? `PDF에서 문항을 찾는 중 · ${analysisProgress}%` : status === 'error' ? '분석을 완료하지 못했습니다' : isDemo ? '예시 분석 결과' : '새 PDF 분석 완료'}</div>
+                <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">{status === 'analyzing' ? <LoaderCircle className="size-4 animate-spin text-primary" /> : <ScanSearch className="size-4 text-primary" />} {status === 'analyzing' ? (visionProgress || `PDF에서 문항을 찾는 중 · ${analysisProgress}%`) : status === 'error' ? '분석을 완료하지 못했습니다' : isDemo ? '예시 분석 결과' : '새 PDF 분석 완료'}</div>
                 <h1 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-[28px]">문항과 성취기준을 확인하세요</h1>
                 {error && <p role="alert" className="mt-2 max-w-2xl text-sm font-medium leading-6 text-destructive">{error} 다른 PDF를 선택하면 새로 분석합니다.</p>}
                 {qualityWarning && <p role="status" className="mt-2 max-w-2xl rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium leading-6 text-amber-800">{qualityWarning}</p>}
+                {visionError && <p role="alert" className="mt-2 max-w-2xl rounded-lg bg-red-50 px-3 py-2 text-sm font-medium leading-6 text-red-700">{visionError}</p>}
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button variant="outline" onClick={() => inputRef.current?.click()}><Upload /> PDF 바꾸기</Button>
@@ -330,7 +400,7 @@ export default function Home() {
                         <button key={`${question.number}-${index}`} onClick={() => setSelected(index)} className={`group grid w-full grid-cols-[48px_minmax(0,1fr)] gap-3 p-4 text-left transition sm:grid-cols-[54px_minmax(0,1fr)_auto] ${selected === index ? 'bg-selected' : 'hover:bg-muted/50'}`}>
                           <span className={`grid size-11 place-items-center rounded-2xl text-lg font-extrabold ${selected === index ? 'bg-primary text-white' : 'bg-muted text-foreground'}`}>{String(question.number).padStart(2, '0')}</span>
                           <span className="min-w-0">
-                            <span className="flex flex-wrap items-center gap-2"><span className="text-xs font-medium text-muted-foreground">{question.type}</span><Badge variant="outline" className="h-5 border-primary/15 bg-primary/5 text-primary">{question.domain}</Badge></span>
+                            <span className="flex flex-wrap items-center gap-2"><span className="text-xs font-medium text-muted-foreground">{question.type}</span><Badge variant="outline" className="h-5 border-primary/15 bg-primary/5 text-primary">{question.domain}</Badge>{question.visionEnhanced && <Badge variant="secondary" className="h-5 bg-emerald-50 text-emerald-700">수식·그림 인식</Badge>}</span>
                             <span className="mt-2 line-clamp-2 block text-[15px] font-medium leading-6">{question.text}</span>
                           </span>
                           <span className="col-start-2 flex items-center gap-2 self-center sm:col-start-auto">
@@ -344,7 +414,7 @@ export default function Home() {
                     <div className="border-t bg-muted/35 px-4 py-3 text-center text-xs text-muted-foreground">문항 텍스트와 추천 성취기준은 내보내기 전에 직접 수정할 수 있습니다</div>
                   </div>
 
-                  {questionData[selected] && <QuestionInspector question={questionData[selected]} canMerge={selected > 0} onTextChange={updateSelectedText} onStandardChange={updateSelectedStandard} onSubjectChange={updateSelectedSubject} onRefresh={refreshSelectedCandidates} onSplit={splitSelectedQuestion} onMerge={mergeWithPrevious} />}
+                  {questionData[selected] && <QuestionInspector question={questionData[selected]} canMerge={selected > 0} recognizing={recognizingQuestion === questionData[selected].number} onTextChange={updateSelectedText} onStandardChange={updateSelectedStandard} onSubjectChange={updateSelectedSubject} onRefresh={refreshSelectedCandidates} onRecognize={() => void recognizeSelectedQuestion()} onSplit={splitSelectedQuestion} onMerge={mergeWithPrevious} />}
                 </div>
               </TabsContent>
 
@@ -373,13 +443,15 @@ export default function Home() {
   );
 }
 
-function QuestionInspector({ question, canMerge, onTextChange, onStandardChange, onSubjectChange, onRefresh, onSplit, onMerge }: {
+function QuestionInspector({ question, canMerge, recognizing, onTextChange, onStandardChange, onSubjectChange, onRefresh, onRecognize, onSplit, onMerge }: {
   question: AnalyzedQuestion;
   canMerge: boolean;
+  recognizing: boolean;
   onTextChange: (text: string) => void;
   onStandardChange: (code: string) => void;
   onSubjectChange: (subjectKey: string) => void;
   onRefresh: () => void;
+  onRecognize: () => void;
   onSplit: (position: number) => void;
   onMerge: () => void;
 }) {
@@ -415,18 +487,30 @@ function QuestionInspector({ question, canMerge, onTextChange, onStandardChange,
           <Button variant="outline" size="sm" onClick={() => insertLatex('$60\\,\\mathrm{km/h}$')}>단위</Button>
         </div>
         <div className="mt-3 rounded-xl border bg-muted/35 p-3">
-          <p className="mb-2 text-xs font-semibold text-muted-foreground">수식 미리보기</p>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="text-xs font-semibold text-muted-foreground">수식 미리보기</p>
+            {question.visionEnhanced && <Badge variant="secondary" className="bg-emerald-50 text-emerald-700">자동 인식 완료</Badge>}
+          </div>
           <Suspense fallback={<p className="text-sm text-muted-foreground">수식 렌더러를 불러오는 중…</p>}><MathText text={question.text} /></Suspense>
         </div>
+        <Button variant="outline" className="mt-3 w-full" disabled={recognizing || !question.sourcePageImage} onClick={onRecognize}>
+          {recognizing ? <LoaderCircle className="animate-spin" /> : <Sparkles />} {recognizing ? '수식·그림 판독 중…' : '이 문항 수식·그림 다시 자동 인식'}
+        </Button>
         <div className="mt-3 grid grid-cols-2 gap-2">
           <Button variant="outline" size="sm" disabled={cursor < 8 || cursor > question.text.length - 8} onClick={() => onSplit(cursor)}>커서에서 문항 나누기</Button>
           <Button variant="outline" size="sm" disabled={!canMerge} onClick={onMerge}>이전 문항과 합치기</Button>
         </div>
         <p className="mt-2 text-xs leading-5 text-muted-foreground">경계가 틀리면 새 문항이 시작되는 위치에 커서를 놓고 나누세요.</p>
-        {question.pageImage && (
-          <details className="mt-4 overflow-hidden rounded-xl border" open>
-            <summary className="cursor-pointer bg-muted/50 px-3 py-2 text-xs font-semibold text-muted-foreground">원문 페이지 캡처 · 그림과 깨진 숫자 확인</summary>
-            <img src={question.pageImage} alt={`${question.number}번 문항이 포함된 PDF 원문 페이지`} className="h-auto w-full bg-white object-contain" />
+        {question.figureImage && (
+          <figure className="mt-4 overflow-hidden rounded-xl border">
+            <figcaption className="bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">자동 감지한 문항 그림자료 · 문서에 첨부됨</figcaption>
+            <img src={question.figureImage} alt={`${question.number}번 문항의 자동 감지 그림자료`} className="h-auto w-full bg-white object-contain" />
+          </figure>
+        )}
+        {question.sourcePageImage && (
+          <details className="mt-3 overflow-hidden rounded-xl border">
+            <summary className="cursor-pointer bg-muted/50 px-3 py-2 text-xs font-semibold text-muted-foreground">원문 페이지 펼쳐서 인식 결과 확인</summary>
+            <img src={question.sourcePageImage} alt={`${question.number}번 문항이 포함된 PDF 원문 페이지`} className="h-auto w-full bg-white object-contain" />
           </details>
         )}
         <div className="my-5 h-px bg-border" />
