@@ -1,3 +1,16 @@
+export type StandardCandidate = {
+  code: string;
+  standard: string;
+  domain: string;
+  confidence: number;
+};
+
+export type SubjectCandidate = {
+  key: string;
+  label: string;
+  confidence: number;
+};
+
 export type AnalyzedQuestion = {
   number: number;
   type: string;
@@ -6,11 +19,12 @@ export type AnalyzedQuestion = {
   standard: string;
   confidence: number;
   domain: string;
+  standardCandidates?: StandardCandidate[];
+  subjectCandidates?: SubjectCandidate[];
 };
 
 // The curriculum catalogue is the pinned worksheet-grab dataset documented in
 // THIRD_PARTY_NOTICES.md; the app never invents or rewrites standard statements.
-
 export type StandardRecord = {
   school: string;
   subject: string;
@@ -20,11 +34,15 @@ export type StandardRecord = {
 };
 
 type QuestionChunk = { number: number; page: number; text: string };
+type PositionedText = { text: string; x: number; y: number; width: number };
+type ScoredStandard = { standard: StandardRecord; score: number };
 let standardsPromise: Promise<StandardRecord[]> | undefined;
+const standardTokenCache = new WeakMap<StandardRecord, Set<string>>();
 
 const stopWords = new Set([
   '그리고', '그러나', '통하여', '활용하여', '이해하고', '설명할', '분석할', '있다',
   '대한', '따라', '다양한', '과정', '관계', '경우', '것은', '것을', '있는', '한다',
+  '다음', '그림', '보기', '옳은', '고른', '내용', '학생', '교사', '문항',
 ]);
 
 export function loadAchievementStandards() {
@@ -37,15 +55,8 @@ export function loadAchievementStandards() {
   return standardsPromise;
 }
 
-export async function analyzePdf(
-  file: File,
-  selection: string,
-  onProgress?: (page: number, total: number) => void,
-) {
-  const [pdfjs, allStandards] = await Promise.all([
-    import('pdfjs-dist'),
-    loadAchievementStandards(),
-  ]);
+export async function analyzePdf(file: File, onProgress?: (page: number, total: number) => void) {
+  const [pdfjs, allStandards] = await Promise.all([import('pdfjs-dist'), loadAchievementStandards()]);
   pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
   const source = new Uint8Array(await file.arrayBuffer());
   const pdf = await pdfjs.getDocument({ data: source }).promise;
@@ -53,57 +64,107 @@ export async function analyzePdf(
 
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     const page = await pdf.getPage(pageNumber);
+    const viewport = page.getViewport({ scale: 1 });
     const content = await page.getTextContent();
-    const positioned = content.items
-      .filter((item): item is typeof item & { str: string; transform: number[] } => 'str' in item && 'transform' in item && Boolean(item.str.trim()))
-      .map((item) => ({ text: item.str.trim(), x: item.transform[4], y: item.transform[5] }))
-      .sort((a, b) => Math.abs(b.y - a.y) > 2.5 ? b.y - a.y : a.x - b.x);
-
-    const lines: Array<{ y: number; parts: Array<{ x: number; text: string }> }> = [];
-    for (const item of positioned) {
-      const line = lines.find((candidate) => Math.abs(candidate.y - item.y) <= 2.5);
-      if (line) line.parts.push({ x: item.x, text: item.text });
-      else lines.push({ y: item.y, parts: [{ x: item.x, text: item.text }] });
-    }
-    pages.push(lines
-      .sort((a, b) => b.y - a.y)
-      .map((line) => line.parts.sort((a, b) => a.x - b.x).map((part) => part.text).join(' ').replace(/\s+/g, ' ').trim())
-      .filter(Boolean));
+    const positioned: PositionedText[] = content.items
+      .filter((item): item is typeof item & { str: string; transform: number[]; width?: number } => 'str' in item && 'transform' in item && Boolean(item.str.trim()))
+      .map((item) => ({
+        text: item.str.trim(),
+        x: item.transform[4],
+        y: item.transform[5],
+        width: typeof item.width === 'number' ? item.width : 0,
+      }));
+    pages.push(buildReadingOrder(positioned, viewport.width));
     onProgress?.(pageNumber, pdf.numPages);
   }
 
-  const extractedLength = pages.flat().join('').length;
-  if (extractedLength < 40) {
+  if (pages.flat().join('').length < 40) {
     throw new Error('이 PDF는 스캔 이미지로 구성되어 텍스트를 읽을 수 없습니다. OCR 기능이 필요한 문서입니다.');
   }
-
-  const [school, subject] = selection.split('|');
-  const catalog = allStandards.filter((standard) => standard.school === school && standard.subject === subject);
-  if (!catalog.length) throw new Error('선택한 학교급·과목에 해당하는 성취기준이 없습니다.');
 
   const chunks = splitIntoQuestions(pages);
   return {
     pageCount: pdf.numPages,
-    questions: chunks.slice(0, 80).map((chunk) => mapQuestion(chunk, catalog)),
+    questions: chunks.slice(0, 80).map((chunk) => classifyQuestion({
+      number: chunk.number,
+      type: `자동 추출 문항 · ${chunk.page}쪽`,
+      text: chunk.text.slice(0, 3000),
+      standardCode: '',
+      standard: '',
+      confidence: 0,
+      domain: '',
+    }, allStandards)),
   };
 }
 
-function splitIntoQuestions(pages: string[][]): QuestionChunk[] {
-  const rows = pages.flatMap((lines, pageIndex) => lines.map((text) => ({ text, page: pageIndex + 1 })));
+export function classifyQuestion(question: AnalyzedQuestion, catalog: StandardRecord[], subjectKey?: string): AnalyzedQuestion {
+  const rankedAll = scoreStandards(question.text, catalog);
+  const subjectScores = new Map<string, { label: string; score: number }>();
+  for (const item of rankedAll) {
+    const key = `${item.standard.school}|${item.standard.subject}`;
+    const previous = subjectScores.get(key);
+    if (!previous || item.score > previous.score) subjectScores.set(key, { label: `${item.standard.school} · ${item.standard.subject}`, score: item.score });
+  }
+  const subjectCandidates = [...subjectScores.entries()]
+    .sort((a, b) => b[1].score - a[1].score)
+    .slice(0, 6)
+    .map(([key, value]) => ({ key, label: value.label, confidence: scoreToConfidence(value.score) }));
+  const chosenSubject = subjectKey ?? subjectCandidates[0]?.key;
+  const scoped = chosenSubject ? rankedAll.filter(({ standard }) => `${standard.school}|${standard.subject}` === chosenSubject) : rankedAll;
+  const standardCandidates = scoped.slice(0, 6).map(({ standard, score }) => ({
+    code: standard.code,
+    standard: standard.statement,
+    domain: `${standard.school} · ${standard.subject}`,
+    confidence: scoreToConfidence(score),
+  }));
+  const best = standardCandidates[0];
+  if (!best) return question;
+  return { ...question, standardCode: best.code, standard: best.standard, confidence: best.confidence, domain: best.domain, standardCandidates, subjectCandidates };
+}
+
+function buildReadingOrder(items: PositionedText[], pageWidth: number) {
+  const spanning = items.filter((item) => item.width > pageWidth * 0.62);
+  const body = items.filter((item) => item.width <= pageWidth * 0.62);
+  const midpoint = pageWidth / 2;
+  const left = body.filter((item) => item.x + item.width / 2 < midpoint);
+  const right = body.filter((item) => item.x + item.width / 2 >= midpoint);
+  const leftChars = left.reduce((sum, item) => sum + item.text.length, 0);
+  const rightChars = right.reduce((sum, item) => sum + item.text.length, 0);
+  const rightStart = right.length ? Math.min(...right.map((item) => item.x)) : 0;
+  const isTwoColumn = leftChars > 100 && rightChars > 100 && rightStart > pageWidth * 0.46;
+  if (!isTwoColumn) return toLines(items);
+
+  const topY = Math.max(...body.map((item) => item.y), 0) - 8;
+  const top = spanning.filter((item) => item.y >= topY);
+  const remaining = spanning.filter((item) => !top.includes(item));
+  return [
+    ...toLines(top),
+    ...toLines([...left, ...remaining.filter((item) => item.x < midpoint)]),
+    ...toLines([...right, ...remaining.filter((item) => item.x >= midpoint)]),
+  ];
+}
+
+function toLines(items: PositionedText[]) {
+  const lines: Array<{ y: number; parts: Array<{ x: number; text: string }> }> = [];
+  for (const item of [...items].sort((a, b) => Math.abs(b.y - a.y) > 2.5 ? b.y - a.y : a.x - b.x)) {
+    const line = lines.find((candidate) => Math.abs(candidate.y - item.y) <= 2.5);
+    if (line) line.parts.push({ x: item.x, text: item.text });
+    else lines.push({ y: item.y, parts: [{ x: item.x, text: item.text }] });
+  }
+  return lines
+    .sort((a, b) => b.y - a.y)
+    .map((line) => line.parts.sort((a, b) => a.x - b.x).map((part) => part.text).join(' ').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+}
+
+export function splitIntoQuestions(pages: string[][]): QuestionChunk[] {
+  const rows = pages.flatMap((lines, pageIndex) => lines.flatMap((text) => splitInlineQuestionStarts(text).map((part) => ({ text: part, page: pageIndex + 1 }))));
   const candidates = rows.map((row, index) => {
-    const match = row.text.match(/^\s*(\d{1,2})(?:\s*[.)]|\s{1,})\s*(.+)$/);
+    const match = row.text.match(/^\s*(?:문항\s*)?(\d{1,2})\s*[.)]\s*(.{6,})$/);
     return match ? { index, number: Number(match[1]), page: row.page, rest: match[2].trim() } : null;
   }).filter((value): value is NonNullable<typeof value> => Boolean(value && value.number >= 1 && value.number <= 80));
 
-  const sequence: typeof candidates = [];
-  let expected = candidates.some((candidate) => candidate.number === 1) ? 1 : candidates[0]?.number ?? 1;
-  for (const candidate of candidates) {
-    if (candidate.number === expected) {
-      sequence.push(candidate);
-      expected += 1;
-    }
-  }
-
+  const sequence = longestAscendingSequence(candidates);
   if (sequence.length >= 2) {
     return sequence.map((candidate, index) => {
       const nextIndex = sequence[index + 1]?.index ?? rows.length;
@@ -112,41 +173,61 @@ function splitIntoQuestions(pages: string[][]): QuestionChunk[] {
     }).filter((chunk) => chunk.text.length > 8);
   }
 
-  return pages.map((lines, pageIndex) => ({
-    number: pageIndex + 1,
-    page: pageIndex + 1,
-    text: lines.join('\n').trim(),
-  })).filter((chunk) => chunk.text.length > 8);
+  return pages.map((lines, pageIndex) => ({ number: pageIndex + 1, page: pageIndex + 1, text: lines.join('\n').trim() })).filter((chunk) => chunk.text.length > 8);
 }
 
-function mapQuestion(chunk: QuestionChunk, catalog: StandardRecord[]): AnalyzedQuestion {
-  const questionTokens = tokenize(chunk.text);
-  const ranked = catalog.map((standard) => {
-    const standardTokens = tokenize(standard.statement);
+function splitInlineQuestionStarts(text: string) {
+  return text
+    .replace(/\s+(\d{1,2}\s*[.)]\s*(?=(?:다음|그림|표|교사|학생|어느|다음은|다음과)))/g, '\n$1')
+    .split('\n')
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function longestAscendingSequence<T extends { number: number }>(items: T[]) {
+  if (!items.length) return [] as T[];
+  const lengths = items.map(() => 1);
+  const previous = items.map(() => -1);
+  for (let current = 0; current < items.length; current += 1) {
+    for (let candidate = 0; candidate < current; candidate += 1) {
+      const gap = items[current].number - items[candidate].number;
+      if (gap > 0 && gap <= 12 && lengths[candidate] + 1 > lengths[current]) {
+        lengths[current] = lengths[candidate] + 1;
+        previous[current] = candidate;
+      }
+    }
+  }
+  let cursor = lengths.indexOf(Math.max(...lengths));
+  const result: T[] = [];
+  while (cursor >= 0) { result.unshift(items[cursor]); cursor = previous[cursor]; }
+  return result;
+}
+
+function scoreStandards(text: string, catalog: StandardRecord[]): ScoredStandard[] {
+  const questionTokens = tokenize(text);
+  return catalog.map((standard) => {
+    let standardTokens = standardTokenCache.get(standard);
+    if (!standardTokens) {
+      standardTokens = tokenize(standard.statement);
+      standardTokenCache.set(standard, standardTokens);
+    }
     const shared = [...questionTokens].filter((token) => standardTokens.has(token));
-    const phraseBonus = shared.reduce((sum, token) => sum + Math.min(token.length, 5), 0);
-    return { standard, score: shared.length * 4 + phraseBonus };
+    const phraseBonus = shared.reduce((sum, token) => sum + Math.min(token.length, 6), 0);
+    return { standard, score: shared.length * 5 + phraseBonus };
   }).sort((a, b) => b.score - a.score);
-  const best = ranked[0];
-  const confidence = best.score === 0 ? 42 : Math.min(96, 54 + best.score * 2);
-  return {
-    number: chunk.number,
-    type: `자동 추출 문항 · ${chunk.page}쪽`,
-    text: chunk.text.slice(0, 3000),
-    standardCode: best.standard.code,
-    standard: best.standard.statement,
-    confidence,
-    domain: `${best.standard.school} · ${best.standard.subject}`,
-  };
+}
+
+function scoreToConfidence(score: number) {
+  return score === 0 ? 35 : Math.min(96, 48 + score * 2);
 }
 
 function tokenize(text: string) {
   return new Set((text.toLowerCase().match(/[가-힣a-z0-9]{2,}/g) ?? [])
-    .map((token) => token.replace(/(으로|에서|에게|하고|하는|하여|한다|된다|있음을|있다|대한|따른)$/u, ''))
+    .map((token) => token.replace(/(으로|에서|에게|하고|하는|하여|한다|된다|있음을|있다|대한|따른|에게|처럼|보다|까지|부터|과|와|의|을|를|이|가|은|는|에|로)$/u, ''))
     .filter((token) => token.length >= 2 && !stopWords.has(token)));
 }
 
-function parseStandardsCsv(csv: string): StandardRecord[] {
+export function parseStandardsCsv(csv: string): StandardRecord[] {
   const rows: string[][] = [];
   let row: string[] = []; let field = ''; let quoted = false;
   for (let index = 0; index < csv.length; index += 1) {

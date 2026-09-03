@@ -37,6 +37,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import {
   analyzePdf,
+  classifyQuestion,
   loadAchievementStandards,
   type AnalyzedQuestion,
   type StandardRecord,
@@ -78,7 +79,6 @@ export default function Home() {
   const [fileName, setFileName] = useState('예시 · 2026학년도 6월 모의평가_물리학Ⅰ.pdf');
   const [selected, setSelected] = useState(0);
   const [questionData, setQuestionData] = useState(sampleQuestions);
-  const [subject, setSubject] = useState('고등학교|물리학');
   const [pageCount, setPageCount] = useState(24);
   const [status, setStatus] = useState<'ready' | 'analyzing' | 'error'>('ready');
   const [error, setError] = useState('');
@@ -88,7 +88,10 @@ export default function Home() {
   const [standards, setStandards] = useState<StandardRecord[]>([]);
 
   useEffect(() => {
-    void loadAchievementStandards().then(setStandards).catch(() => undefined);
+    void loadAchievementStandards().then((items) => {
+      setStandards(items);
+      setQuestionData((current) => current.map((question) => classifyQuestion(question, items)));
+    }).catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -139,7 +142,7 @@ export default function Home() {
     setError('');
     setSelected(0);
     try {
-      const result = await analyzePdf(file, subject, (page, total) => setAnalysisProgress(Math.round((page / total) * 100)));
+      const result = await analyzePdf(file, (page, total) => setAnalysisProgress(Math.round((page / total) * 100)));
       if (!result.questions.length) throw new Error('문항을 찾지 못했습니다. 텍스트가 포함된 모의고사 PDF인지 확인해 주세요.');
       setPageCount(result.pageCount);
       setQuestionData(result.questions);
@@ -155,20 +158,48 @@ export default function Home() {
   }
 
   function updateSelectedStandard(code: string) {
-    const standard = standards.find((item) => item.code === code && `${item.school}|${item.subject}` === subject);
-    if (!standard) return;
+    const current = questionData[selected];
+    const candidate = current?.standardCandidates?.find((item) => item.code === code);
+    if (!candidate) return;
     setQuestionData((current) => current.map((question, index) => index === selected ? {
       ...question,
-      standardCode: standard.code,
-      standard: standard.statement,
-      domain: `${standard.school} · ${standard.subject}`,
-      confidence: 100,
+      standardCode: candidate.code,
+      standard: candidate.standard,
+      domain: candidate.domain,
+      confidence: candidate.confidence,
     } : question));
   }
 
-  const courseOptions = [...new Map(standards.map((item) => [`${item.school}|${item.subject}`, { value: `${item.school}|${item.subject}`, label: `${item.school} · ${item.subject}` }])).values()]
-    .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
-  const courseStandards = standards.filter((item) => `${item.school}|${item.subject}` === subject);
+  function updateSelectedSubject(subjectKey: string) {
+    setQuestionData((current) => current.map((question, index) => index === selected ? classifyQuestion(question, standards, subjectKey) : question));
+  }
+
+  function refreshSelectedCandidates() {
+    setQuestionData((current) => current.map((question, index) => index === selected ? classifyQuestion(question, standards) : question));
+  }
+
+  function splitSelectedQuestion(position: number) {
+    const question = questionData[selected];
+    if (!question || position < 8 || position > question.text.length - 8) return;
+    const firstText = question.text.slice(0, position).trim();
+    let secondText = question.text.slice(position).trim();
+    const marker = secondText.match(/^(\d{1,2})\s*[.)]\s*/);
+    const secondNumber = marker ? Number(marker[1]) : question.number + 1;
+    if (marker) secondText = secondText.slice(marker[0].length).trim();
+    const first = classifyQuestion({ ...question, text: firstText }, standards);
+    const second = classifyQuestion({ ...question, number: secondNumber, text: secondText, type: question.type.replace('자동 추출', '수동 분리') }, standards);
+    setQuestionData((current) => [...current.slice(0, selected), first, second, ...current.slice(selected + 1)]);
+    setSelected(selected + 1);
+  }
+
+  function mergeWithPrevious() {
+    if (selected === 0) return;
+    const previous = questionData[selected - 1];
+    const current = questionData[selected];
+    const merged = classifyQuestion({ ...previous, text: `${previous.text}\n${current.number}. ${current.text}`, type: previous.type.replace('자동 추출', '수동 병합') }, standards);
+    setQuestionData((items) => [...items.slice(0, selected - 1), merged, ...items.slice(selected + 1)]);
+    setSelected(selected - 1);
+  }
 
   const standardCount = new Set(questionData.map((question) => question.standardCode)).size;
   const highConfidence = questionData.filter((question) => question.confidence >= 85).length;
@@ -223,10 +254,10 @@ export default function Home() {
             <NativeSelect className="w-full [&_select]:border-white/12 [&_select]:bg-white/7 [&_select]:text-white">
               <NativeSelectOption>2022 개정 교육과정 · 원본 CSV</NativeSelectOption>
             </NativeSelect>
-            <label className="block pt-2 text-xs font-medium text-white/55">교과 · 과목</label>
-            <NativeSelect value={subject} onChange={(event) => setSubject(event.target.value)} className="w-full [&_select]:border-white/12 [&_select]:bg-white/7 [&_select]:text-white">
-              {courseOptions.length ? courseOptions.map((option) => <NativeSelectOption key={option.value} value={option.value}>{option.label}</NativeSelectOption>) : <NativeSelectOption value="고등학교|물리학">고등학교 · 물리학</NativeSelectOption>}
-            </NativeSelect>
+            <div className="rounded-xl border border-white/10 bg-white/6 p-3">
+              <p className="text-xs font-semibold text-white/80">교과는 문항별로 추천됩니다</p>
+              <p className="mt-1 text-xs leading-5 text-white/50">각 문항에서 관련성이 높은 교과 후보만 확인하고 선택할 수 있습니다.</p>
+            </div>
           </div>
 
           <div className="mt-7 border-t border-white/10 pt-5">
@@ -290,7 +321,7 @@ export default function Home() {
                         </Empty>
                       )}
                       {questionData.map((question, index) => (
-                        <button key={question.number} onClick={() => setSelected(index)} className={`group grid w-full grid-cols-[48px_minmax(0,1fr)] gap-3 p-4 text-left transition sm:grid-cols-[54px_minmax(0,1fr)_auto] ${selected === index ? 'bg-selected' : 'hover:bg-muted/50'}`}>
+                        <button key={`${question.number}-${index}`} onClick={() => setSelected(index)} className={`group grid w-full grid-cols-[48px_minmax(0,1fr)] gap-3 p-4 text-left transition sm:grid-cols-[54px_minmax(0,1fr)_auto] ${selected === index ? 'bg-selected' : 'hover:bg-muted/50'}`}>
                           <span className={`grid size-11 place-items-center rounded-2xl text-lg font-extrabold ${selected === index ? 'bg-primary text-white' : 'bg-muted text-foreground'}`}>{String(question.number).padStart(2, '0')}</span>
                           <span className="min-w-0">
                             <span className="flex flex-wrap items-center gap-2"><span className="text-xs font-medium text-muted-foreground">{question.type}</span><Badge variant="outline" className="h-5 border-primary/15 bg-primary/5 text-primary">{question.domain}</Badge></span>
@@ -307,7 +338,7 @@ export default function Home() {
                     <div className="border-t bg-muted/35 px-4 py-3 text-center text-xs text-muted-foreground">문항 텍스트와 추천 성취기준은 내보내기 전에 직접 수정할 수 있습니다</div>
                   </div>
 
-                  {questionData[selected] && <QuestionInspector question={questionData[selected]} standards={courseStandards} onTextChange={updateSelectedText} onStandardChange={updateSelectedStandard} />}
+                  {questionData[selected] && <QuestionInspector question={questionData[selected]} canMerge={selected > 0} onTextChange={updateSelectedText} onStandardChange={updateSelectedStandard} onSubjectChange={updateSelectedSubject} onRefresh={refreshSelectedCandidates} onSplit={splitSelectedQuestion} onMerge={mergeWithPrevious} />}
                 </div>
               </TabsContent>
 
@@ -336,29 +367,50 @@ export default function Home() {
   );
 }
 
-function QuestionInspector({ question, standards, onTextChange, onStandardChange }: { question: AnalyzedQuestion; standards: StandardRecord[]; onTextChange: (text: string) => void; onStandardChange: (code: string) => void }) {
+function QuestionInspector({ question, canMerge, onTextChange, onStandardChange, onSubjectChange, onRefresh, onSplit, onMerge }: {
+  question: AnalyzedQuestion;
+  canMerge: boolean;
+  onTextChange: (text: string) => void;
+  onStandardChange: (code: string) => void;
+  onSubjectChange: (subjectKey: string) => void;
+  onRefresh: () => void;
+  onSplit: (position: number) => void;
+  onMerge: () => void;
+}) {
+  const textRef = useRef<HTMLTextAreaElement>(null);
+  const [cursor, setCursor] = useState(0);
+  const subjectCandidates = question.subjectCandidates ?? [{ key: question.domain.replace(' · ', '|'), label: question.domain, confidence: question.confidence }];
+  const standardCandidates = question.standardCandidates ?? [{ code: question.standardCode, standard: question.standard, domain: question.domain, confidence: question.confidence }];
+  const selectedSubject = subjectCandidates.find((candidate) => candidate.label === question.domain)?.key ?? subjectCandidates[0]?.key ?? '';
   return (
     <aside className="overflow-hidden rounded-2xl border bg-background">
       <div className="inspector-head p-5 text-white">
-        <div className="flex items-center justify-between"><p className="text-xs font-semibold uppercase tracking-[0.12em] text-white/60">추천 성취기준</p><Badge className="bg-white/12 text-white">AI {question.confidence}%</Badge></div>
+        <div className="flex items-center justify-between"><p className="text-xs font-semibold uppercase tracking-[0.12em] text-white/60">문항별 추천 결과</p><Badge className="bg-white/12 text-white">후보 {standardCandidates.length}개</Badge></div>
         <p className="mt-5 font-mono text-2xl font-bold tracking-tight text-accent">{question.standardCode}</p>
         <p className="mt-2 text-lg font-bold">{question.domain}</p>
       </div>
       <div className="p-5">
-        <Textarea aria-label="문항 텍스트" value={question.text} onChange={(event) => onTextChange(event.target.value)} className="min-h-32 resize-y border-0 bg-transparent p-0 text-sm leading-6 shadow-none focus-visible:ring-0" />
-        <div className="my-5 h-px bg-border" />
-        <p className="text-sm leading-6 text-foreground/80">{question.standard}</p>
-        <div className="mt-5 rounded-xl border border-primary/10 bg-primary/5 p-4">
-          <p className="text-xs font-bold text-primary">매핑 근거</p>
-          <p className="mt-2 text-sm leading-6 text-muted-foreground">문항의 핵심 개념과 요구 동사가 성취기준의 내용 요소와 직접 연결됩니다.</p>
+        <Textarea ref={textRef} aria-label="문항 텍스트" value={question.text} onChange={(event) => onTextChange(event.target.value)} onSelect={(event) => setCursor(event.currentTarget.selectionStart)} className="min-h-40 resize-y border-0 bg-transparent p-0 text-sm leading-6 shadow-none focus-visible:ring-0" />
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <Button variant="outline" size="sm" disabled={cursor < 8 || cursor > question.text.length - 8} onClick={() => onSplit(cursor)}>커서에서 문항 나누기</Button>
+          <Button variant="outline" size="sm" disabled={!canMerge} onClick={onMerge}>이전 문항과 합치기</Button>
         </div>
-        <div className="mt-5">
-          <label className="text-xs font-semibold text-muted-foreground">분류 결과 수정</label>
-          <NativeSelect value={question.standardCode} onChange={(event) => onStandardChange(event.target.value)} className="mt-2 w-full">
-            {standards.map((standard) => <NativeSelectOption key={standard.code} value={standard.code}>{standard.code} · {standard.statement.slice(0, 34)}</NativeSelectOption>)}
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">경계가 틀리면 새 문항이 시작되는 위치에 커서를 놓고 나누세요.</p>
+        <div className="my-5 h-px bg-border" />
+        <div>
+          <label className="text-xs font-semibold text-muted-foreground">이 문항의 교과 후보</label>
+          <NativeSelect value={selectedSubject} onChange={(event) => onSubjectChange(event.target.value)} className="mt-2 w-full">
+            {subjectCandidates.map((candidate) => <NativeSelectOption key={candidate.key} value={candidate.key}>{candidate.label} · {candidate.confidence}%</NativeSelectOption>)}
           </NativeSelect>
         </div>
-        <Button variant="outline" className="mt-3 w-full">이 문항 검토 완료 <Check /></Button>
+        <div className="mt-5">
+          <label className="text-xs font-semibold text-muted-foreground">성취기준 후보</label>
+          <NativeSelect value={question.standardCode} onChange={(event) => onStandardChange(event.target.value)} className="mt-2 w-full">
+            {standardCandidates.map((candidate) => <NativeSelectOption key={candidate.code} value={candidate.code}>{candidate.code} · {candidate.confidence}%</NativeSelectOption>)}
+          </NativeSelect>
+        </div>
+        <p className="mt-4 rounded-xl border border-primary/10 bg-primary/5 p-4 text-sm leading-6 text-foreground/80">{question.standard}</p>
+        <Button variant="outline" className="mt-3 w-full" onClick={onRefresh}>수정한 문장으로 후보 다시 찾기 <ScanSearch /></Button>
       </div>
     </aside>
   );
