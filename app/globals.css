@@ -1,0 +1,77 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-selected: var(--selected);
+  --font-sans: var(--font-sans-stack);
+  --font-mono: var(--font-mono-stack);
+  --radius-sm: calc(var(--radius) * .6);
+  --radius-md: calc(var(--radius) * .8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+}
+
+:root {
+  --font-sans-stack: Pretendard, -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  --font-mono-stack: "SFMono-Regular", Consolas, monospace;
+  --background: oklch(.975 .008 90);
+  --foreground: oklch(.205 .025 250);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(.205 .025 250);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(.205 .025 250);
+  --primary: oklch(.38 .105 245);
+  --primary-foreground: oklch(.99 0 0);
+  --secondary: oklch(.94 .012 90);
+  --secondary-foreground: oklch(.27 .03 245);
+  --muted: oklch(.95 .009 90);
+  --muted-foreground: oklch(.52 .025 250);
+  --accent: oklch(.86 .185 121);
+  --accent-foreground: oklch(.25 .065 132);
+  --destructive: oklch(.58 .22 27);
+  --border: oklch(.9 .012 90);
+  --input: oklch(.88 .015 90);
+  --ring: oklch(.58 .12 245);
+  --selected: oklch(.96 .028 230);
+  --radius: .8rem;
+}
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  html { @apply font-sans; }
+  body { @apply bg-background text-foreground; }
+  button, select { font: inherit; }
+}
+
+.workspace-sidebar {
+  background: linear-gradient(160deg, oklch(.265 .065 251), oklch(.18 .04 254) 72%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .08), 0 20px 50px rgb(22 38 63 / .12);
+}
+
+.inspector-head {
+  background: radial-gradient(circle at 90% 5%, rgb(189 243 86 / .18), transparent 34%), linear-gradient(145deg, oklch(.34 .095 245), oklch(.23 .065 253));
+}
+
+::selection { background: rgb(189 243 86 / .45); }
