@@ -2,11 +2,13 @@ appId: kr.co.munhangmap.desktop
 productName: 문항맵
 electronVersion: 38.8.6
 asar: true
+afterPack: desktop/scripts/after-pack.cjs
 directories:
   output: ../release
 files:
   - '**/*'
   - '!electron-builder.yml'
+  - '!scripts/**/*'
   - '!build/icon.iconset/**/*'
 electronLanguages:
   - ko
