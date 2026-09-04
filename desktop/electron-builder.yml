@@ -9,6 +9,8 @@ files:
   - '**/*'
   - '!electron-builder.yml'
   - '!scripts/**/*'
+  - '!renderer/**/*'
+  - '!vite.renderer.config.ts'
   - '!build/icon.iconset/**/*'
 electronLanguages:
   - ko

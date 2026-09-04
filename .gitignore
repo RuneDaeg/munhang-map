@@ -39,4 +39,5 @@ next-env.d.ts
 /work/
 /release/
 /desktop/build/icon.iconset/
+/desktop/renderer-dist/
 *.tsbuildinfo

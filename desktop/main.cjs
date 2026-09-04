@@ -1,13 +1,46 @@
 /* oxlint-disable typescript/no-require-imports */
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, net, protocol, shell } = require('electron');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 
 const MODEL = 'gpt-4o-mini';
-const SITE_URL = process.env.MUNHANG_MAP_URL || 'https://munhang-map.kmo4102.chatgpt.site/';
-const SITE_ORIGIN = new URL(SITE_URL).origin;
+const APP_SCHEME = 'munhang';
+const APP_HOST = 'app';
+const APP_URL = `${APP_SCHEME}://${APP_HOST}/index.html`;
+const RENDERER_DIR = path.join(__dirname, 'renderer-dist');
 let apiKey = '';
 let setupWindow;
 let mainWindow;
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: APP_SCHEME,
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+  },
+}]);
+
+function registerAppProtocol() {
+  protocol.handle(APP_SCHEME, async (request) => {
+    const requestUrl = new URL(request.url);
+    if (requestUrl.host !== APP_HOST) return new Response('Not found', { status: 404 });
+
+    const relativePath = decodeURIComponent(requestUrl.pathname).replace(/^\/+/, '') || 'index.html';
+    const rendererRoot = path.resolve(RENDERER_DIR);
+    const targetPath = path.resolve(rendererRoot, relativePath);
+    if (!targetPath.startsWith(`${rendererRoot}${path.sep}`)) {
+      return new Response('Forbidden', { status: 403 });
+    }
+
+    try {
+      return await net.fetch(pathToFileURL(targetPath).toString());
+    } catch {
+      return new Response('Not found', { status: 404 });
+    }
+  });
+}
 
 function windowOptions(overrides = {}) {
   return {
@@ -36,17 +69,17 @@ function createMainWindow() {
   mainWindow.removeMenu();
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith(SITE_ORIGIN)) return { action: 'allow' };
-    void shell.openExternal(url);
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (new URL(url).origin !== SITE_ORIGIN) {
+    const target = new URL(url);
+    if (target.protocol !== `${APP_SCHEME}:` || target.host !== APP_HOST) {
       event.preventDefault();
-      void shell.openExternal(url);
+      if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
     }
   });
-  void mainWindow.loadURL(SITE_URL);
+  void mainWindow.loadURL(APP_URL);
   mainWindow.on('closed', () => { mainWindow = undefined; });
 }
 
@@ -142,6 +175,7 @@ function makeRequest(image, questions) {
 }
 
 void app.whenReady().then(() => {
+  registerAppProtocol();
   createSetupWindow();
   app.on('activate', () => {
     if (!BrowserWindow.getAllWindows().length) createSetupWindow();
