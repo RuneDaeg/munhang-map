@@ -8,4 +8,5 @@ contextBridge.exposeInMainWorld('munhangDesktop', {
   recognize: (body) => ipcRenderer.invoke('vision:recognize', body),
   setApiKey: (apiKey) => ipcRenderer.invoke('setup:set-api-key', apiKey),
   skipApiKey: () => ipcRenderer.invoke('setup:skip-api-key'),
+  openApiKeySettings: () => ipcRenderer.invoke('setup:open'),
 });

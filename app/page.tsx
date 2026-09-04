@@ -43,7 +43,7 @@ import {
   type StandardRecord,
 } from '@/lib/pdf-analysis';
 import { downloadDocx, downloadHwpx } from '@/lib/document-export';
-import { enhanceQuestionsWithVision, getVisionStatus } from '@/lib/vision-recognition';
+import { enhanceQuestionsWithVision, getVisionStatus, openDesktopApiKeySettings } from '@/lib/vision-recognition';
 
 const MathText = lazy(() => import('@/components/math-text'));
 
@@ -334,7 +334,8 @@ export default function Home() {
                 <span className={`size-2 rounded-full ${visionAvailable ? 'bg-emerald-400' : 'bg-amber-300'}`} />
                 <p className="text-xs font-semibold text-white/80">자동 수식·그림 인식 {visionAvailable ? '사용 중' : '로컬 키 필요'}</p>
               </div>
-              <p className="mt-1 text-xs leading-5 text-white/50">{visionAvailable ? `${visionModel} · PDF 페이지별 자동 판독` : desktopMode ? '앱을 다시 열고 시작 화면에서 API 키를 입력하세요.' : '.env.local에 OPENAI_API_KEY를 설정하면 활성화됩니다.'}</p>
+              <p className="mt-1 text-xs leading-5 text-white/50">{visionAvailable ? `${visionModel} · 암호화된 로컬 키 사용` : desktopMode ? 'API 키를 설정하면 자동 판독을 사용할 수 있습니다.' : '.env.local에 OPENAI_API_KEY를 설정하면 활성화됩니다.'}</p>
+              {desktopMode && <button type="button" onClick={() => void openDesktopApiKeySettings()} className="mt-2 text-xs font-semibold text-accent underline decoration-white/25 underline-offset-4">API 키 {visionAvailable ? '변경' : '설정'}</button>}
             </div>
           </div>
 

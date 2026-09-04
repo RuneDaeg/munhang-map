@@ -26,7 +26,7 @@ export async function POST(request: Request) {
         content: [
           {
             type: 'input_text',
-            text: `이 이미지는 한국어 시험지의 한 페이지입니다. 아래 문항별로 이미지 원문을 확인해 텍스트 추출 오류를 교정하세요.\n\n${questions.map((question) => `${question.number}번: ${question.text}`).join('\n\n')}\n\n규칙:\n1. 원문에 실제로 보이는 수식, 숫자, 단위만 복원하고 추측하지 마세요.\n2. 수식과 과학 단위는 KaTeX 호환 LaTeX로 바꾸고 인라인은 $...$, 독립 수식은 $$...$$로 감싸세요.\n3. 문항에 딸린 그림, 그래프, 표, 회로, 지도 또는 자료 화면이 있으면 그 자료만 포함하는 사각형을 페이지 전체 기준 0~1 좌표 [x,y,width,height]로 반환하세요. 문제 지문과 선택지는 사각형에서 최대한 제외하세요.\n4. 그림자료가 없으면 hasFigure=false, figureBox=null입니다.\n5. 전달받은 모든 문항 번호를 한 번씩 반환하세요.`,
+            text: `이 이미지는 한국어 시험지의 한 페이지입니다. 아래 대상 문항을 이미지에서 다시 찾아 완전한 문항 구조와 그림 영역을 판독하세요.\n\n${questions.map((question) => `${question.number}번 기존 추출문:\n${question.text}`).join('\n\n')}\n\n문항 구조 규칙:\n1. 하나의 문항은 문항 번호부터 다음 문항 번호 직전까지입니다. 시험지가 2단이면 반드시 같은 단 안에서만 찾으세요.\n2. 그림·표·자료가 있는 문항은 보통 자료 위의 간접 발문, 자료, 자료 아래의 직접 발문, 배점, 선택지 순서입니다. 위와 아래 문장을 빠뜨리지 마세요.\n3. indirectStem에는 그림 위의 설명·간접 발문을, directStem에는 그림 아래의 질문·직접 발문과 배점을 넣으세요. 그림이 없으면 indirectStem은 빈 문자열이고 directStem에 전체 발문을 넣으세요.\n4. choices에는 ①~⑤ 등 모든 선택지를 원문 순서로 각각 넣으세요. 문장을 요약하거나 일부만 반환하지 마세요.\n5. latexText에는 indirectStem, directStem, choices를 원문 읽기 순서로 합친 완전한 문항을 넣으세요. 문항 번호 자체는 제외하세요.\n6. 원문에 실제로 보이는 수식·숫자·단위만 복원하고, 수식과 과학 단위는 KaTeX 호환 LaTeX로 바꾸세요. 일반 한글은 LaTeX의 \\text{}로 감싸지 마세요.\n7. questionBox는 해당 문항 전체(간접 발문부터 마지막 선택지까지)의 페이지 기준 0~1 좌표 [x,y,width,height]입니다.\n8. figureBox는 해당 문항의 그림·그래프·표·회로·지도와 그 내부 표기만 포함하는 페이지 기준 좌표입니다. 간접 발문, 직접 발문, 선택지, 다른 문항은 제외하고 questionBox 안에 있어야 합니다.\n9. 그림자료가 없으면 hasFigure=false, figureBox=null입니다. 전달받은 모든 문항 번호를 정확히 한 번씩 반환하세요.`,
           },
           { type: 'input_image', image_url: body.image, detail: 'high' },
         ],
@@ -46,6 +46,10 @@ export async function POST(request: Request) {
                   properties: {
                     number: { type: 'integer' },
                     latexText: { type: 'string' },
+                    indirectStem: { type: 'string' },
+                    directStem: { type: 'string' },
+                    choices: { type: 'array', items: { type: 'string' } },
+                    questionBox: { type: 'array', items: { type: 'number', minimum: 0, maximum: 1 }, minItems: 4, maxItems: 4 },
                     hasFigure: { type: 'boolean' },
                     figureBox: {
                       anyOf: [
@@ -54,7 +58,7 @@ export async function POST(request: Request) {
                       ],
                     },
                   },
-                  required: ['number', 'latexText', 'hasFigure', 'figureBox'],
+                  required: ['number', 'latexText', 'indirectStem', 'directStem', 'choices', 'questionBox', 'hasFigure', 'figureBox'],
                   additionalProperties: false,
                 },
               },

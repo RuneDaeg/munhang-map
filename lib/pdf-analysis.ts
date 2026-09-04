@@ -111,14 +111,14 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
 }
 
 async function renderPageCapture(page: PDFPageProxy) {
-  const viewport = page.getViewport({ scale: 1.3 });
+  const viewport = page.getViewport({ scale: 2 });
   const canvas = document.createElement('canvas');
   canvas.width = Math.ceil(viewport.width);
   canvas.height = Math.ceil(viewport.height);
   const context = canvas.getContext('2d', { alpha: false });
   if (!context) return '';
   await page.render({ canvasContext: context, viewport }).promise;
-  const image = canvas.toDataURL('image/jpeg', 0.84);
+  const image = canvas.toDataURL('image/jpeg', 0.9);
   canvas.width = 1;
   canvas.height = 1;
   return image;
