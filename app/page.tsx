@@ -43,7 +43,7 @@ import {
   type StandardRecord,
 } from '@/lib/pdf-analysis';
 import { downloadDocx, downloadHwpx } from '@/lib/document-export';
-import { enhanceQuestionsWithVision, getVisionStatus, openDesktopApiKeySettings } from '@/lib/vision-recognition';
+import { enhanceQuestionsWithVision, getVisionStatus, openApiConnectionSettings, type VisionStatus } from '@/lib/vision-recognition';
 
 const MathText = lazy(() => import('@/components/math-text'));
 
@@ -92,7 +92,12 @@ export default function Home() {
   const [standards, setStandards] = useState<StandardRecord[]>([]);
   const [visionAvailable, setVisionAvailable] = useState(false);
   const [visionModel, setVisionModel] = useState('');
+  const [visionProvider, setVisionProvider] = useState('');
+  const [visionKeyHint, setVisionKeyHint] = useState('');
+  const [visionUsage, setVisionUsage] = useState<VisionStatus['usage']>();
+  const [visionRemaining, setVisionRemaining] = useState<number | null>(null);
   const [desktopMode, setDesktopMode] = useState(false);
+  const [localMode, setLocalMode] = useState(false);
   const [visionProgress, setVisionProgress] = useState('');
   const [visionError, setVisionError] = useState('');
   const [recognizingQuestion, setRecognizingQuestion] = useState<number | null>(null);
@@ -105,12 +110,19 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    void getVisionStatus().then(({ available, model, desktop }) => {
-      setVisionAvailable(available);
-      setVisionModel(model);
-      setDesktopMode(Boolean(desktop));
-    }).catch(() => undefined);
+    void getVisionStatus().then(applyVisionStatus).catch(() => undefined);
   }, []);
+
+  function applyVisionStatus(vision: VisionStatus) {
+    setVisionAvailable(vision.available);
+    setVisionModel(vision.model);
+    setVisionProvider(vision.providerLabel ?? '');
+    setVisionKeyHint(vision.keyHint ?? '');
+    setVisionUsage(vision.usage);
+    setVisionRemaining(typeof vision.estimatedRemainingUsd === 'number' ? vision.estimatedRemainingUsd : null);
+    setDesktopMode(Boolean(vision.desktop));
+    setLocalMode(Boolean(vision.local && !vision.desktop));
+  }
 
   useEffect(() => {
     type Context = { registerTool: (tool: unknown, options?: { signal?: AbortSignal }) => void | Promise<void> };
@@ -168,9 +180,7 @@ export default function Home() {
       setPageCount(result.pageCount);
       setQuestionData(result.questions);
       const vision = await getVisionStatus().catch(() => ({ available: false, model: '', desktop: false }));
-      setVisionAvailable(vision.available);
-      setVisionModel(vision.model);
-      setDesktopMode(Boolean(vision.desktop));
+      applyVisionStatus(vision);
       let finalQuestions = result.questions;
       let warning = result.qualityWarning;
       if (vision.available) {
@@ -182,6 +192,7 @@ export default function Home() {
         const catalog = standards.length ? standards : await loadAchievementStandards();
         setStandards(catalog);
         finalQuestions = enhanced.questions.map((question) => classifyQuestion(question, catalog));
+        void getVisionStatus().then(applyVisionStatus).catch(() => undefined);
         if (enhanced.failures.length) {
           const message = `${enhanced.failures.length}개 페이지는 자동 수식·그림 인식을 완료하지 못했습니다.`;
           setVisionError(message);
@@ -232,16 +243,15 @@ export default function Home() {
     setVisionError('');
     try {
       const status = await getVisionStatus();
-      setVisionAvailable(status.available);
-      setVisionModel(status.model);
-      setDesktopMode(Boolean(status.desktop));
-      if (!status.available) throw new Error(status.desktop ? '앱을 다시 열고 OpenAI API 키를 입력해 주세요.' : '로컬 .env.local에 OPENAI_API_KEY를 설정한 뒤 개발 서버를 다시 시작해 주세요.');
+      applyVisionStatus(status);
+      if (!status.available) throw new Error(status.desktop || status.local ? '먼저 API 연결을 설정해 주세요.' : '로컬 .env.local에 OPENAI_API_KEY를 설정한 뒤 개발 서버를 다시 시작해 주세요.');
       const result = await enhanceQuestionsWithVision([question]);
       if (result.failures.length) throw new Error(result.failures[0]);
       const catalog = standards.length ? standards : await loadAchievementStandards();
       setStandards(catalog);
       const enhanced = classifyQuestion(result.questions[0], catalog);
       setQuestionData((current) => current.map((item, index) => index === selected ? enhanced : item));
+      void getVisionStatus().then(applyVisionStatus).catch(() => undefined);
     } catch (reason) {
       setVisionError(reason instanceof Error ? reason.message : '자동 인식을 완료하지 못했습니다.');
     } finally {
@@ -334,8 +344,13 @@ export default function Home() {
                 <span className={`size-2 rounded-full ${visionAvailable ? 'bg-emerald-400' : 'bg-amber-300'}`} />
                 <p className="text-xs font-semibold text-white/80">자동 수식·그림 인식 {visionAvailable ? '사용 중' : '로컬 키 필요'}</p>
               </div>
-              <p className="mt-1 text-xs leading-5 text-white/50">{visionAvailable ? `${visionModel} · 암호화된 로컬 키 사용` : desktopMode ? 'API 키를 설정하면 자동 판독을 사용할 수 있습니다.' : '.env.local에 OPENAI_API_KEY를 설정하면 활성화됩니다.'}</p>
-              {desktopMode && <button type="button" onClick={() => void openDesktopApiKeySettings()} className="mt-2 text-xs font-semibold text-accent underline decoration-white/25 underline-offset-4">API 키 {visionAvailable ? '변경' : '설정'}</button>}
+              <p className="mt-1 whitespace-pre-line text-xs leading-5 text-white/50">{visionAvailable
+                ? `${visionProvider || 'AI API'} · ${visionKeyHint || '서버 키'}\n${visionModel}`
+                : desktopMode || localMode
+                  ? 'API 연결을 설정하면 자동 판독을 사용할 수 있습니다.'
+                  : '.env.local에 OPENAI_API_KEY를 설정하면 활성화됩니다.'}</p>
+              {visionAvailable && visionUsage && <p className="mt-1 text-xs leading-5 text-white/65">토큰 {formatCompact(visionUsage.inputTokens + visionUsage.outputTokens)} · 앱 추정 ${visionUsage.estimatedUsd.toFixed(4)}{visionRemaining !== null ? ` · 잔액 $${visionRemaining.toFixed(4)}` : ''}</p>}
+              {(desktopMode || localMode) && <button type="button" onClick={() => void openApiConnectionSettings()} className="mt-2 text-xs font-semibold text-accent underline decoration-white/25 underline-offset-4">API 연결 {visionAvailable ? '변경·사용량 보기' : '설정'}</button>}
             </div>
           </div>
 
@@ -593,4 +608,8 @@ function ExportDialog({ open, onOpenChange, fileName, questions }: { open: boole
 function average(items: AnalyzedQuestion[]) {
   if (!items.length) return 0;
   return Math.round(items.reduce((sum, item) => sum + item.confidence, 0) / items.length);
+}
+
+function formatCompact(value: number) {
+  return new Intl.NumberFormat('ko-KR', { notation: value >= 10_000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(value);
 }

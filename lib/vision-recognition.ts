@@ -16,10 +16,26 @@ type VisionItem = {
 type VisionRequestQuestion = { number: number; text: string };
 type VisionResponse = { questions?: VisionItem[]; error?: string };
 
+export type VisionStatus = {
+  available: boolean;
+  model: string;
+  desktop?: boolean;
+  local?: boolean;
+  provider?: string;
+  providerLabel?: string;
+  keyHint?: string;
+  storageLabel?: string;
+  usage?: { requests: number; inputTokens: number; outputTokens: number; estimatedUsd: number };
+  budgetUsd?: number | null;
+  estimatedRemainingUsd?: number | null;
+  balanceSource?: 'local_estimate';
+  settingsUrl?: string;
+};
+
 type DesktopBridge = {
   isDesktop: true;
   platform: string;
-  getVisionStatus: () => Promise<{ available: boolean; model: string; desktop?: boolean }>;
+  getVisionStatus: () => Promise<VisionStatus>;
   recognize: (body: { image: string; questions: VisionRequestQuestion[] }) => Promise<VisionResponse>;
   openApiKeySettings: () => Promise<{ ok: boolean }>;
 };
@@ -29,7 +45,7 @@ function desktopBridge() {
   return (window as Window & { munhangDesktop?: DesktopBridge }).munhangDesktop;
 }
 
-export async function getVisionStatus(): Promise<{ available: boolean; model: string; desktop?: boolean }> {
+export async function getVisionStatus(): Promise<VisionStatus> {
   const desktop = desktopBridge();
   if (desktop) return desktop.getVisionStatus();
   const response = await fetch('/api/recognize');
@@ -38,11 +54,17 @@ export async function getVisionStatus(): Promise<{ available: boolean; model: st
   return { ...status, desktop: false };
 }
 
-export async function openDesktopApiKeySettings() {
+export async function openApiConnectionSettings() {
   const desktop = desktopBridge();
-  if (!desktop) return false;
-  const result = await desktop.openApiKeySettings();
-  return result.ok;
+  if (desktop) {
+    const result = await desktop.openApiKeySettings();
+    return result.ok;
+  }
+  if (typeof window !== 'undefined') {
+    window.location.assign('/settings.html');
+    return true;
+  }
+  return false;
 }
 
 export async function enhanceQuestionsWithVision(

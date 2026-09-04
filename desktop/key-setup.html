@@ -3,50 +3,122 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>문항맵 API 키 설정</title>
+    <title>문항맵 API 연결</title>
     <style>
       :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
       * { box-sizing: border-box; }
-      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #eef6fb; color: #102638; }
-      main { width: min(420px, calc(100vw - 32px)); padding: 30px; border: 1px solid #d6e4ed; border-radius: 24px; background: white; box-shadow: 0 24px 70px rgba(23, 57, 79, .16); }
-      .mark { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 15px; background: #075486; color: white; font-weight: 800; font-size: 20px; }
-      h1 { margin: 22px 0 8px; font-size: 24px; letter-spacing: -.04em; }
-      p { margin: 0; color: #587082; font-size: 14px; line-height: 1.65; }
-      label { display: block; margin-top: 24px; font-size: 13px; font-weight: 700; }
-      input { width: 100%; margin-top: 8px; padding: 13px 14px; border: 1px solid #c9d9e3; border-radius: 12px; font: inherit; }
-      input:focus { outline: 3px solid #bfe4f6; border-color: #1477aa; }
-      .hint { margin-top: 9px; font-size: 12px; }
-      .actions { display: grid; grid-template-columns: 1fr 1.5fr; gap: 10px; margin-top: 24px; }
-      button { min-height: 44px; border: 0; border-radius: 12px; font: inherit; font-weight: 700; cursor: pointer; }
+      body { margin: 0; min-height: 100vh; padding: 24px; background: #eef6fb; color: #102638; }
+      main { width: min(540px, 100%); margin: 0 auto; padding: 28px; border: 1px solid #d6e4ed; border-radius: 24px; background: white; box-shadow: 0 24px 70px rgba(23, 57, 79, .12); }
+      .mark { display: grid; place-items: center; width: 46px; height: 46px; border-radius: 14px; background: #075486; color: white; font-weight: 800; font-size: 19px; }
+      h1 { margin: 18px 0 8px; font-size: 24px; letter-spacing: -.04em; }
+      p { margin: 0; color: #587082; font-size: 14px; line-height: 1.6; }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 20px; }
+      .full { grid-column: 1 / -1; }
+      label { display: block; color: #29495c; font-size: 13px; font-weight: 750; }
+      input, select { width: 100%; height: 44px; margin-top: 7px; padding: 0 12px; border: 1px solid #c9d9e3; border-radius: 11px; background: white; color: #102638; font: inherit; }
+      input:focus, select:focus { outline: 3px solid #bfe4f6; border-color: #1477aa; }
+      .hint { margin-top: 7px; font-size: 12px; }
+      .custom-only[hidden] { display: none; }
+      .actions { display: grid; grid-template-columns: 1fr 1.5fr; gap: 10px; margin-top: 22px; }
+      button { min-height: 44px; border: 0; border-radius: 12px; font: inherit; font-weight: 750; cursor: pointer; }
       button[type="button"] { background: #edf2f5; color: #405866; }
       button[type="submit"] { background: #075486; color: white; }
+      button:disabled { cursor: wait; opacity: .65; }
       #error { min-height: 20px; margin-top: 10px; color: #b42318; font-size: 12px; }
+      .privacy { margin-top: 16px; padding: 12px; border-radius: 12px; background: #eef9f5; color: #2c6655; font-size: 12px; }
     </style>
   </head>
   <body>
     <main>
       <div class="mark">문</div>
-      <h1>문항맵을 시작합니다</h1>
-      <p>자동 수식·그림 인식을 사용하려면 OpenAI API 키를 입력하세요. 키는 운영체제의 보안 저장소로 암호화되며, 한 번 저장하면 다음 실행부터 자동으로 사용됩니다.</p>
+      <h1>AI 공급자 연결</h1>
+      <p>OpenAI·Anthropic·Gemini 또는 OpenAI 호환 로컬 서버를 선택할 수 있습니다. 저장한 키는 운영체제 보안 저장소로 암호화됩니다.</p>
       <form id="form">
-        <label for="api-key">OpenAI API 키</label>
-        <input id="api-key" name="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" autofocus />
-        <p class="hint">키 없이 시작해도 PDF 기본 추출과 문서 내보내기를 사용할 수 있습니다.</p>
+        <div class="grid">
+          <label class="full">API 공급자
+            <select id="provider">
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic Claude</option>
+              <option value="gemini">Google Gemini</option>
+              <option value="compatible">OpenAI 호환/로컬</option>
+            </select>
+          </label>
+          <label>모델 ID<input id="model" autocomplete="off" spellcheck="false" required /></label>
+          <label>API 키<input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="변경할 때만 입력" /></label>
+          <label class="full custom-only" hidden>OpenAI 호환 기본 주소
+            <input id="baseUrl" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:11434/v1" />
+          </label>
+          <label>월 사용 예산 ($)<input id="budgetUsd" type="number" min="0" step="0.01" placeholder="선택 사항" /></label>
+          <span></span>
+          <label>입력 100만 토큰 ($)<input id="inputPrice" type="number" min="0" step="0.0001" /></label>
+          <label>출력 100만 토큰 ($)<input id="outputPrice" type="number" min="0" step="0.0001" /></label>
+        </div>
+        <p class="hint">모델과 단가는 언제든 바꿀 수 있습니다. 표시 금액은 이 앱의 응답 토큰을 기준으로 한 추정치입니다.</p>
+        <p class="privacy">PDF 페이지는 문항맵 서버가 아니라 여기서 선택한 API 공급자에게 직접 전송됩니다.</p>
         <div class="actions">
-          <button id="skip" type="button">키 없이 시작</button>
-          <button type="submit">키를 사용해 시작</button>
+          <button id="skip" type="button">나중에 설정</button>
+          <button id="save" type="submit">연결 저장</button>
         </div>
         <p id="error" role="alert"></p>
       </form>
     </main>
     <script>
+      const defaults = {
+        openai: { model: 'gpt-4o-mini', input: 0.15, output: 0.6 },
+        anthropic: { model: 'claude-sonnet-5', input: 2, output: 10 },
+        gemini: { model: 'gemini-2.5-flash', input: 0.3, output: 2.5 },
+        compatible: { model: '', input: 0, output: 0 },
+      };
       const form = document.querySelector('#form');
-      const input = document.querySelector('#api-key');
+      const provider = document.querySelector('#provider');
+      const model = document.querySelector('#model');
+      const apiKey = document.querySelector('#apiKey');
+      const baseUrl = document.querySelector('#baseUrl');
+      const budgetUsd = document.querySelector('#budgetUsd');
+      const inputPrice = document.querySelector('#inputPrice');
+      const outputPrice = document.querySelector('#outputPrice');
       const error = document.querySelector('#error');
+      const save = document.querySelector('#save');
+
+      void loadCurrent();
+      async function loadCurrent() {
+        const status = await window.munhangDesktop.getVisionStatus();
+        provider.value = status.provider || 'openai';
+        model.value = status.model || defaults[provider.value].model;
+        baseUrl.value = status.baseUrl || '';
+        budgetUsd.value = status.budgetUsd ?? '';
+        inputPrice.value = status.inputPrice ?? defaults[provider.value].input;
+        outputPrice.value = status.outputPrice ?? defaults[provider.value].output;
+        updateFields(false);
+      }
+
+      provider.addEventListener('change', () => updateFields(true));
+      function updateFields(reset) {
+        const selected = defaults[provider.value];
+        document.querySelector('.custom-only').hidden = provider.value !== 'compatible';
+        baseUrl.required = provider.value === 'compatible';
+        if (reset) {
+          model.value = selected.model;
+          inputPrice.value = selected.input;
+          outputPrice.value = selected.output;
+          apiKey.value = '';
+        }
+      }
+
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
         error.textContent = '';
-        const result = await window.munhangDesktop.setApiKey(input.value);
+        save.disabled = true;
+        const result = await window.munhangDesktop.setConnection({
+          provider: provider.value,
+          model: model.value,
+          apiKey: apiKey.value,
+          baseUrl: baseUrl.value,
+          budgetUsd: budgetUsd.value,
+          inputPrice: inputPrice.value,
+          outputPrice: outputPrice.value,
+        });
+        save.disabled = false;
         if (!result.ok) error.textContent = result.error;
       });
       document.querySelector('#skip').addEventListener('click', () => window.munhangDesktop.skipApiKey());

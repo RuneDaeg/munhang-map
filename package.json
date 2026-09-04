@@ -1,6 +1,6 @@
 {
   "name": "munhang-map",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "모의고사 PDF 문항 분리·수식 복원·성취기준 분류 도구",
   "author": "문항맵",
   "private": true,
@@ -16,6 +16,9 @@
     "desktop:dist": "vite build --config desktop/vite.renderer.config.ts && electron-builder --projectDir desktop --config electron-builder.yml --publish never",
     "desktop:mac": "vite build --config desktop/vite.renderer.config.ts && electron-builder --projectDir desktop --config electron-builder.yml --mac dmg --arm64 --publish never",
     "desktop:win": "vite build --config desktop/vite.renderer.config.ts && electron-builder --projectDir desktop --config electron-builder.yml --win nsis --x64 --publish never",
+    "local": "vite build --config desktop/vite.renderer.config.ts && node local/server.cjs",
+    "local:package": "vite build --config desktop/vite.renderer.config.ts && node local/scripts/package.cjs",
+    "test:providers": "node --test tests/provider-client.test.cjs",
     "lint": "oxlint",
     "format": "oxfmt"
   },
