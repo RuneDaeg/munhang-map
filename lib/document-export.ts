@@ -18,9 +18,9 @@ export function createDocxBytes(title: string, questions: AnalyzedQuestion[]) {
     <w:p><w:r><w:t xml:space="preserve">${xml(question.text)}</w:t></w:r></w:p>
     <w:p><w:pPr><w:pStyle w:val="Standard"/></w:pPr><w:r><w:t>${xml(`${question.standardCode} ${question.domain}`)}</w:t></w:r></w:p>
     <w:p><w:r><w:t>${xml(question.standard)}</w:t></w:r></w:p>
-    ${images.byQuestion.get(index) ? `<w:p><w:r><w:rPr><w:b/><w:color w:val="64748B"/></w:rPr><w:t>문항 그림자료</w:t></w:r></w:p>${docxImageParagraph(`rId${index + 2}`, index + 1, images.byQuestion.get(index)!)}` : ''}`).join('');
+    ${(images.byQuestion.get(index) ?? []).map((image, imageIndex) => `<w:p><w:r><w:rPr><w:b/><w:color w:val="64748B"/></w:rPr><w:t>${question.questionCaptures?.length ? '문항 전체 원문 캡처' : '문항 그림자료'}${question.captureWarning ? ' · 범위 확인 필요' : ''}</w:t></w:r></w:p>${docxImageParagraph(`rIdImage${image.itemId}`, index * 100 + imageIndex + 1, image)}`).join('')}`).join('');
   const sourceNotice = '<w:p><w:r><w:rPr><w:color w:val="64748B"/><w:sz w:val="18"/></w:rPr><w:t>성취기준 출처: pblsketch/worksheet-grab (2022 개정 교육과정)</w:t></w:r></w:p>';
-  const imageRelationships = [...images.byQuestion.entries()].map(([index, image]) => `<Relationship Id="rId${index + 2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${image.fileName}"/>`).join('');
+  const imageRelationships = images.unique.map((image) => `<Relationship Id="rIdImage${image.itemId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${image.fileName}"/>`).join('');
   const entries: ZipEntry[] = [
     entry('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="jpg" ContentType="image/jpeg"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`),
     entry('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`),
@@ -72,7 +72,7 @@ export function createHwpxBytesFromTemplate(title: string, questions: AnalyzedQu
     .replace('name="creator" content="text"', 'name="creator" content="문항맵"')
     .replace('name="lastsaveby" content="text"', 'name="lastsaveby" content="문항맵"')
     .replace('</opf:manifest>', `${imageManifest}</opf:manifest>`);
-  const preview = [title, `문항 ${questions.length}개 · 성취기준별 자동 분류`, ...questions.flatMap((question) => [`${question.number}번 문항`, question.text, question.standardCode, question.standard, question.figureImage ? '[문항 그림자료 포함]' : '']), '성취기준 출처: pblsketch/worksheet-grab'].join('\n');
+  const preview = [title, `문항 ${questions.length}개 · 성취기준별 자동 분류`, ...questions.flatMap((question) => [`${question.number}번 문항`, question.text, question.standardCode, question.standard, question.questionCaptures?.length ? '[문항 전체 원문 캡처 포함]' : question.figureImage ? '[문항 그림자료 포함]' : '']), '성취기준 출처: pblsketch/worksheet-grab'].join('\n');
   const replacements = new Map<string, Uint8Array>([
     ['Contents/section0.xml', encoder.encode(section)],
     ['Contents/content.hpf', encoder.encode(content)],
@@ -84,7 +84,7 @@ export function createHwpxBytesFromTemplate(title: string, questions: AnalyzedQu
   ]);
 }
 
-function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestion[], images: Map<number, EmbeddedPageImage>) {
+function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestion[], images: Map<number, EmbeddedPageImage[]>) {
   const open = base.match(/<hs:sec\b[^>]*>/)?.[0];
   const first = base.match(/<hp:p\b[\s\S]*?<\/hp:p>/)?.[0]
     ?.replace(/<hp:linesegarray>[\s\S]*?<\/hp:linesegarray>/g, '')
@@ -98,10 +98,9 @@ function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestio
     for (const line of question.text.split(/\r?\n/).filter(Boolean)) parts.push(paragraph(line));
     parts.push(paragraph(`${question.standardCode}  ${question.domain}`, '6'));
     parts.push(paragraph(`- ${question.standard}`));
-    const image = images.get(index);
-    if (image) {
-      parts.push(paragraph('문항 그림자료', '2'));
-      parts.push(hwpxImageParagraph(id++, image, 10000 + index * 2, 10001 + index * 2));
+    for (const image of images.get(index) ?? []) {
+      parts.push(paragraph(`${question.questionCaptures?.length ? '문항 전체 원문 캡처' : '문항 그림자료'}${question.captureWarning ? ' · 범위 확인 필요' : ''}`, '2'));
+      parts.push(hwpxImageParagraph(id++, image, 10000 + id * 2, 10001 + id * 2));
     }
     parts.push(paragraph(''));
   }
@@ -118,19 +117,24 @@ function requiredTemplatePart(template: Map<string, Uint8Array>, name: string) {
 function collectPageImages(questions: AnalyzedQuestion[]) {
   const unique: EmbeddedPageImage[] = [];
   const byDataUrl = new Map<string, EmbeddedPageImage>();
-  const byQuestion = new Map<number, EmbeddedPageImage>();
+  const byQuestion = new Map<number, EmbeddedPageImage[]>();
   questions.forEach((question, index) => {
-    if (!question.figureImage?.startsWith('data:image/jpeg;base64,')) return;
-    let image = byDataUrl.get(question.figureImage);
-    if (!image) {
-      const number = unique.length + 1;
-      const data = dataUrlBytes(question.figureImage);
-      const [width, height] = jpegDimensions(data) ?? [4, 3];
-      image = { itemId: `image${number}`, fileName: `figure${number}.jpg`, data, width, height };
-      unique.push(image);
-      byDataUrl.set(question.figureImage, image);
+    const sources = question.questionCaptures?.length ? question.questionCaptures.map((capture) => capture.image) : question.figureImage ? [question.figureImage] : [];
+    const embedded: EmbeddedPageImage[] = [];
+    for (const source of sources) {
+      if (!source.startsWith('data:image/jpeg;base64,')) continue;
+      let image = byDataUrl.get(source);
+      if (!image) {
+        const number = unique.length + 1;
+        const data = dataUrlBytes(source);
+        const [width, height] = jpegDimensions(data) ?? [4, 3];
+        image = { itemId: `image${number}`, fileName: `question${number}.jpg`, data, width, height };
+        unique.push(image);
+        byDataUrl.set(source, image);
+      }
+      embedded.push(image);
     }
-    byQuestion.set(index, image);
+    byQuestion.set(index, embedded);
   });
   return { unique, byQuestion };
 }
@@ -185,15 +189,19 @@ function saveBlob(bytes: Uint8Array, name: string, type: string) {
 }
 
 function zip(entries: ZipEntry[]) {
-  const local: number[] = []; const central: number[] = []; let offset = 0;
+  const local: Uint8Array[] = []; const central: number[] = []; let offset = 0;
   for (const item of entries) {
     const name = encoder.encode(item.name); const crc = crc32(item.data); const size = item.data.length;
     const header = [...u32(0x04034b50), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(0), ...u16(0), ...u32(crc), ...u32(size), ...u32(size), ...u16(name.length), ...u16(0), ...name];
-    local.push(...header, ...item.data);
+    local.push(new Uint8Array(header), item.data);
     central.push(...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(0), ...u16(0), ...u32(crc), ...u32(size), ...u32(size), ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(offset), ...name);
     offset += header.length + size;
   }
-  return new Uint8Array([...local, ...central, ...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(entries.length), ...u16(entries.length), ...u32(central.length), ...u32(local.length), ...u16(0)]);
+  const ending = new Uint8Array([...central, ...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(entries.length), ...u16(entries.length), ...u32(central.length), ...u32(offset), ...u16(0)]);
+  const output = new Uint8Array(offset + ending.length);
+  let cursor = 0;
+  for (const part of [...local, ending]) { output.set(part, cursor); cursor += part.length; }
+  return output;
 }
 
 function u16(n: number) { return [n & 255, (n >>> 8) & 255]; }

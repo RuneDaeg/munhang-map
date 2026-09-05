@@ -1,3 +1,8 @@
+import { layoutPage, locateQuestions, type PageLayout, type PageText } from './pdf-layout';
+import { detectExamSubject, type ExamSubject } from './exam-subject';
+import { cropPage, type QuestionCapture } from './question-capture';
+import type { PDFPageProxy } from 'pdfjs-dist';
+
 export type StandardCandidate = {
   code: string;
   standard: string;
@@ -24,6 +29,10 @@ export type AnalyzedQuestion = {
   sourcePageImage?: string;
   figureImage?: string;
   visionEnhanced?: boolean;
+  questionCaptures?: QuestionCapture[];
+  captureWarning?: string;
+  examSubject?: ExamSubject;
+  selectedSubjectKey?: string;
 };
 
 // The curriculum catalogue is the pinned worksheet-grab dataset documented in
@@ -37,7 +46,6 @@ export type StandardRecord = {
 };
 
 type QuestionChunk = { number: number; page: number; text: string };
-type PositionedText = { text: string; x: number; y: number; width: number };
 type ScoredStandard = { standard: StandardRecord; score: number };
 let standardsPromise: Promise<StandardRecord[]> | undefined;
 const standardTokenCache = new WeakMap<StandardRecord, Set<string>>();
@@ -63,28 +71,27 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
   pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
   const source = new Uint8Array(await file.arrayBuffer());
   const pdf = await pdfjs.getDocument({ data: source }).promise;
-  const pages: string[][] = [];
+  const pages: PageLayout[] = [];
   const pageImages: string[] = [];
-
+  try {
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     const page = await pdf.getPage(pageNumber);
     const viewport = page.getViewport({ scale: 1 });
     const [content, pageImage] = await Promise.all([page.getTextContent(), renderPageCapture(page)]);
-    const positioned: PositionedText[] = content.items
+    const positioned: PageText[] = content.items
       .filter((item): item is typeof item & { str: string; transform: number[]; width?: number } => 'str' in item && 'transform' in item && Boolean(item.str.trim()))
-      .map((item) => ({
-        text: item.str.trim(),
-        x: item.transform[4],
-        y: item.transform[5],
-        width: typeof item.width === 'number' ? item.width : 0,
-      }));
-    pages.push(buildReadingOrder(positioned, viewport.width));
+      .map((item) => {
+        const transform = pdfjs.Util.transform(viewport.transform, item.transform);
+        const height = Math.hypot(transform[2], transform[3]);
+        return { text: item.str.trim(), x: transform[4], y: transform[5] - height, width: typeof item.width === 'number' ? item.width : 0, height };
+      });
+    pages.push(layoutPage(positioned, viewport.width, viewport.height, pageNumber));
     pageImages.push(pageImage);
     page.cleanup();
     onProgress?.(pageNumber, pdf.numPages);
   }
 
-  const extractedText = pages.flat().join('');
+  const extractedText = pages.flatMap((page) => page.columns.flatMap((column) => column.lines.map((line) => line.text))).join('');
   if (extractedText.length < 40) {
     throw new Error('이 PDF는 스캔 이미지로 구성되어 텍스트를 읽을 수 없습니다. OCR 기능이 필요한 문서입니다.');
   }
@@ -93,21 +100,34 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
     ? 'PDF 글꼴 또는 그림 일부가 깨진 문자로 추출되었습니다. 후보를 확정하기 전에 문항 텍스트를 확인하거나 OCR 처리된 PDF를 사용해 주세요.'
     : '';
 
-  const chunks = splitIntoQuestions(pages);
+  const chunks = locateQuestions(pages);
+  const subjects = new Map<number, ExamSubject>();
+  let previousSubject: ExamSubject | undefined;
+  for (const page of pages) {
+    previousSubject = detectExamSubject(page.headerText, allStandards, page.page, previousSubject) ?? previousSubject;
+    if (previousSubject) subjects.set(page.page, previousSubject);
+  }
+  const questions: AnalyzedQuestion[] = [];
+  for (const chunk of chunks.slice(0, 80)) {
+    const questionCaptures: QuestionCapture[] = [];
+    for (const region of chunk.regions) questionCaptures.push({ ...region, image: await cropPage(pageImages[region.page - 1], region.box) });
+    questions.push(classifyQuestion({
+      number: chunk.number,
+      type: `자동 추출 문항 · ${chunk.page}쪽`,
+      text: chunk.text,
+      standardCode: '', standard: '', confidence: 0, domain: '',
+      sourcePageImage: pageImages[chunk.page - 1],
+      questionCaptures,
+      captureWarning: chunk.warning,
+      examSubject: subjects.get(chunk.page),
+    }, allStandards));
+  }
   return {
     pageCount: pdf.numPages,
     qualityWarning,
-    questions: chunks.slice(0, 80).map((chunk) => classifyQuestion({
-      number: chunk.number,
-      type: `자동 추출 문항 · ${chunk.page}쪽`,
-      text: chunk.text.slice(0, 3000),
-      standardCode: '',
-      standard: '',
-      confidence: 0,
-      domain: '',
-      sourcePageImage: pageImages[chunk.page - 1],
-    }, allStandards)),
+    questions,
   };
+  } finally { await pdf.destroy(); }
 }
 
 async function renderPageCapture(page: PDFPageProxy) {
@@ -125,7 +145,10 @@ async function renderPageCapture(page: PDFPageProxy) {
 }
 
 export function classifyQuestion(question: AnalyzedQuestion, catalog: StandardRecord[], subjectKey?: string): AnalyzedQuestion {
-  const rankedAll = scoreStandards(question.text, catalog);
+  const selectedSubjectKey = subjectKey ?? question.selectedSubjectKey;
+  const contextKeys = question.examSubject?.subjectKeys;
+  const scopedCatalog = contextKeys?.length ? catalog.filter((item) => contextKeys.includes(`${item.school}|${item.subject}`) || `${item.school}|${item.subject}` === selectedSubjectKey) : catalog;
+  const rankedAll = scoreStandards(question.text, scopedCatalog.length ? scopedCatalog : catalog);
   const subjectScores = new Map<string, { label: string; score: number }>();
   for (const item of rankedAll) {
     const key = `${item.standard.school}|${item.standard.subject}`;
@@ -133,10 +156,10 @@ export function classifyQuestion(question: AnalyzedQuestion, catalog: StandardRe
     if (!previous || item.score > previous.score) subjectScores.set(key, { label: `${item.standard.school} · ${item.standard.subject}`, score: item.score });
   }
   const subjectCandidates = [...subjectScores.entries()]
-    .sort((a, b) => b[1].score - a[1].score)
+    .sort((a, b) => a[0] === selectedSubjectKey ? -1 : b[0] === selectedSubjectKey ? 1 : b[1].score - a[1].score)
     .slice(0, 6)
     .map(([key, value]) => ({ key, label: value.label, confidence: scoreToConfidence(value.score) }));
-  const chosenSubject = subjectKey ?? subjectCandidates[0]?.key;
+  const chosenSubject = selectedSubjectKey ?? subjectCandidates[0]?.key;
   const scoped = chosenSubject ? rankedAll.filter(({ standard }) => `${standard.school}|${standard.subject}` === chosenSubject) : rankedAll;
   const standardCandidates = scoped.slice(0, 6).map(({ standard, score }) => ({
     code: standard.code,
@@ -146,42 +169,7 @@ export function classifyQuestion(question: AnalyzedQuestion, catalog: StandardRe
   }));
   const best = standardCandidates[0];
   if (!best) return question;
-  return { ...question, standardCode: best.code, standard: best.standard, confidence: best.confidence, domain: best.domain, standardCandidates, subjectCandidates };
-}
-
-function buildReadingOrder(items: PositionedText[], pageWidth: number) {
-  const spanning = items.filter((item) => item.width > pageWidth * 0.62);
-  const body = items.filter((item) => item.width <= pageWidth * 0.62);
-  const midpoint = pageWidth / 2;
-  const left = body.filter((item) => item.x + item.width / 2 < midpoint);
-  const right = body.filter((item) => item.x + item.width / 2 >= midpoint);
-  const leftChars = left.reduce((sum, item) => sum + item.text.length, 0);
-  const rightChars = right.reduce((sum, item) => sum + item.text.length, 0);
-  const rightStart = right.length ? Math.min(...right.map((item) => item.x)) : 0;
-  const isTwoColumn = leftChars > 100 && rightChars > 100 && rightStart > pageWidth * 0.46;
-  if (!isTwoColumn) return toLines(items);
-
-  const topY = Math.max(...body.map((item) => item.y), 0) - 8;
-  const top = spanning.filter((item) => item.y >= topY);
-  const remaining = spanning.filter((item) => !top.includes(item));
-  return [
-    ...toLines(top),
-    ...toLines([...left, ...remaining.filter((item) => item.x < midpoint)]),
-    ...toLines([...right, ...remaining.filter((item) => item.x >= midpoint)]),
-  ];
-}
-
-function toLines(items: PositionedText[]) {
-  const lines: Array<{ y: number; parts: Array<{ x: number; text: string }> }> = [];
-  for (const item of [...items].sort((a, b) => Math.abs(b.y - a.y) > 2.5 ? b.y - a.y : a.x - b.x)) {
-    const line = lines.find((candidate) => Math.abs(candidate.y - item.y) <= 2.5);
-    if (line) line.parts.push({ x: item.x, text: item.text });
-    else lines.push({ y: item.y, parts: [{ x: item.x, text: item.text }] });
-  }
-  return lines
-    .sort((a, b) => b.y - a.y)
-    .map((line) => line.parts.sort((a, b) => a.x - b.x).map((part) => part.text).join(' ').replace(/\s+/g, ' ').trim())
-    .filter(Boolean);
+  return { ...question, selectedSubjectKey, standardCode: best.code, standard: best.standard, confidence: best.confidence, domain: best.domain, standardCandidates, subjectCandidates };
 }
 
 export function splitIntoQuestions(pages: string[][]): QuestionChunk[] {
@@ -279,4 +267,3 @@ export function parseStandardsCsv(csv: string): StandardRecord[] {
     statement: values[4]?.trim(),
   })).filter((record) => record.school && record.subject && record.code && record.statement);
 }
-import type { PDFPageProxy } from 'pdfjs-dist';

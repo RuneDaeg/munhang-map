@@ -1,6 +1,6 @@
 'use client';
 
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
   Check,
@@ -184,17 +184,17 @@ export default function Home() {
       let finalQuestions = result.questions;
       let warning = result.qualityWarning;
       if (vision.available) {
-        setVisionProgress('수식과 그림자료를 자동 인식하는 중');
+        setVisionProgress('문항 전체 캡처에서 발문과 수식을 판독하는 중');
         const enhanced = await enhanceQuestionsWithVision(result.questions, (completed, total) => {
           setAnalysisProgress(60 + Math.round((completed / Math.max(total, 1)) * 40));
-          setVisionProgress(`수식·그림 자동 인식 · ${completed}/${total}쪽`);
+          setVisionProgress(`발문·수식 자동 인식 · ${completed}/${total}문항`);
         });
         const catalog = standards.length ? standards : await loadAchievementStandards();
         setStandards(catalog);
         finalQuestions = enhanced.questions.map((question) => classifyQuestion(question, catalog));
         void getVisionStatus().then(applyVisionStatus).catch(() => undefined);
         if (enhanced.failures.length) {
-          const message = `${enhanced.failures.length}개 페이지는 자동 수식·그림 인식을 완료하지 못했습니다.`;
+          const message = `${enhanced.failures.length}개 문항은 자동 판독을 완료하지 못했습니다. 원문 캡처는 보존되었습니다.`;
           setVisionError(message);
           warning = [warning, message].filter(Boolean).join(' ');
         }
@@ -267,8 +267,9 @@ export default function Home() {
     const marker = secondText.match(/^(\d{1,2})\s*[.)]\s*/);
     const secondNumber = marker ? Number(marker[1]) : question.number + 1;
     if (marker) secondText = secondText.slice(marker[0].length).trim();
-    const first = classifyQuestion({ ...question, text: firstText, figureImage: undefined, visionEnhanced: false }, standards);
-    const second = classifyQuestion({ ...question, number: secondNumber, text: secondText, figureImage: undefined, visionEnhanced: false, type: question.type.replace('자동 추출', '수동 분리') }, standards);
+    const captureWarning = '텍스트를 수동으로 나눴습니다. 캡처에는 분리 전 영역이 보존되어 있으므로 범위를 확인해 주세요.';
+    const first = classifyQuestion({ ...question, text: firstText, captureWarning, figureImage: undefined, visionEnhanced: false }, standards);
+    const second = classifyQuestion({ ...question, number: secondNumber, text: secondText, captureWarning, figureImage: undefined, visionEnhanced: false, type: question.type.replace('자동 추출', '수동 분리') }, standards);
     setQuestionData((current) => [...current.slice(0, selected), first, second, ...current.slice(selected + 1)]);
     setSelected(selected + 1);
   }
@@ -277,7 +278,8 @@ export default function Home() {
     if (selected === 0) return;
     const previous = questionData[selected - 1];
     const current = questionData[selected];
-    const merged = classifyQuestion({ ...previous, text: `${previous.text}\n${current.number}. ${current.text}`, figureImage: undefined, visionEnhanced: false, type: previous.type.replace('자동 추출', '수동 병합') }, standards);
+    const questionCaptures = [...(previous.questionCaptures ?? []), ...(current.questionCaptures ?? [])].filter((capture, index, all) => all.findIndex((item) => item.image === capture.image) === index);
+    const merged = classifyQuestion({ ...previous, text: `${previous.text}\n${current.number}. ${current.text}`, questionCaptures, captureWarning: previous.captureWarning ?? current.captureWarning, figureImage: undefined, visionEnhanced: false, type: previous.type.replace('자동 추출', '수동 병합') }, standards);
     setQuestionData((items) => [...items.slice(0, selected - 1), merged, ...items.slice(selected + 1)]);
     setSelected(selected - 1);
   }
@@ -367,7 +369,7 @@ export default function Home() {
           </div>
 
           <div className="mt-auto hidden pt-8 lg:block">
-            <p className="flex items-start gap-2 text-xs leading-5 text-white/45"><Sparkles className="mt-0.5 size-3.5 shrink-0 text-accent" /> 기본 추출은 브라우저에서, 자동 인식 사용 시 페이지 이미지는 설정한 OpenAI API로 처리됩니다</p>
+            <p className="flex items-start gap-2 text-xs leading-5 text-white/45"><Sparkles className="mt-0.5 size-3.5 shrink-0 text-accent" /> 문항 전체 캡처는 브라우저에서 만듭니다. 자동 판독 사용 시 문항 캡처가 선택한 AI 공급자에게 전송됩니다.</p>
           </div>
         </aside>
 
@@ -377,6 +379,7 @@ export default function Home() {
               <div>
                 <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">{status === 'analyzing' ? <LoaderCircle className="size-4 animate-spin text-primary" /> : <ScanSearch className="size-4 text-primary" />} {status === 'analyzing' ? (visionProgress || `PDF에서 문항을 찾는 중 · ${analysisProgress}%`) : status === 'error' ? '분석을 완료하지 못했습니다' : isDemo ? '예시 분석 결과' : '새 PDF 분석 완료'}</div>
                 <h1 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-[28px]">문항과 성취기준을 확인하세요</h1>
+                {!isDemo && questionData.some((question) => question.examSubject) && <p className="mt-2 text-sm font-medium text-primary">시험지 상단 과목 반영: {[...new Set(questionData.map((question) => question.examSubject?.label).filter(Boolean))].join(' · ')}</p>}
                 {error && <p role="alert" className="mt-2 max-w-2xl text-sm font-medium leading-6 text-destructive">{error} 다른 PDF를 선택하면 새로 분석합니다.</p>}
                 {qualityWarning && <p role="status" className="mt-2 max-w-2xl rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium leading-6 text-amber-800">{qualityWarning}</p>}
                 {visionError && <p role="alert" className="mt-2 max-w-2xl rounded-lg bg-red-50 px-3 py-2 text-sm font-medium leading-6 text-red-700">{visionError}</p>}
@@ -434,7 +437,7 @@ export default function Home() {
                     <div className="border-t bg-muted/35 px-4 py-3 text-center text-xs text-muted-foreground">문항 텍스트와 추천 성취기준은 내보내기 전에 직접 수정할 수 있습니다</div>
                   </div>
 
-                  {questionData[selected] && <QuestionInspector question={questionData[selected]} canMerge={selected > 0} recognizing={recognizingQuestion === questionData[selected].number} onTextChange={updateSelectedText} onStandardChange={updateSelectedStandard} onSubjectChange={updateSelectedSubject} onRefresh={refreshSelectedCandidates} onRecognize={() => void recognizeSelectedQuestion()} onSplit={splitSelectedQuestion} onMerge={mergeWithPrevious} />}
+                  {questionData[selected] && <QuestionInspector question={questionData[selected]} catalog={standards} canMerge={selected > 0} recognizing={recognizingQuestion === questionData[selected].number} onTextChange={updateSelectedText} onStandardChange={updateSelectedStandard} onSubjectChange={updateSelectedSubject} onRefresh={refreshSelectedCandidates} onRecognize={() => void recognizeSelectedQuestion()} onSplit={splitSelectedQuestion} onMerge={mergeWithPrevious} />}
                 </div>
               </TabsContent>
 
@@ -463,8 +466,9 @@ export default function Home() {
   );
 }
 
-function QuestionInspector({ question, canMerge, recognizing, onTextChange, onStandardChange, onSubjectChange, onRefresh, onRecognize, onSplit, onMerge }: {
+function QuestionInspector({ question, catalog, canMerge, recognizing, onTextChange, onStandardChange, onSubjectChange, onRefresh, onRecognize, onSplit, onMerge }: {
   question: AnalyzedQuestion;
+  catalog: StandardRecord[];
   canMerge: boolean;
   recognizing: boolean;
   onTextChange: (text: string) => void;
@@ -477,6 +481,8 @@ function QuestionInspector({ question, canMerge, recognizing, onTextChange, onSt
 }) {
   const textRef = useRef<HTMLTextAreaElement>(null);
   const [cursor, setCursor] = useState(0);
+  const [showAllSubjects, setShowAllSubjects] = useState(false);
+  const allSubjects = useMemo(() => [...new Map(catalog.map((item) => [`${item.school}|${item.subject}`, `${item.school} · ${item.subject}`])).entries()], [catalog]);
   const subjectCandidates = question.subjectCandidates ?? [{ key: question.domain.replace(' · ', '|'), label: question.domain, confidence: question.confidence }];
   const standardCandidates = question.standardCandidates ?? [{ code: question.standardCode, standard: question.standard, domain: question.domain, confidence: question.confidence }];
   const selectedSubject = subjectCandidates.find((candidate) => candidate.label === question.domain)?.key ?? subjectCandidates[0]?.key ?? '';
@@ -498,6 +504,14 @@ function QuestionInspector({ question, canMerge, recognizing, onTextChange, onSt
         <p className="mt-2 text-lg font-bold">{question.domain}</p>
       </div>
       <div className="p-5">
+        {question.examSubject && <p className="mb-3 rounded-lg bg-primary/5 px-3 py-2 text-sm text-primary">{question.examSubject.page}쪽 머리말에서 ‘{question.examSubject.label}’ 감지 · {question.selectedSubjectKey ? '직접 선택한 교과를 우선 반영' : '관련 교과 안에서 성취기준 추천'}</p>}
+        {question.captureWarning && <output className="mb-3 block rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{question.captureWarning}</output>}
+        {question.questionCaptures?.map((capture, index) => (
+          <figure key={`${capture.page}-${index}`} className="mb-4 overflow-hidden rounded-xl border">
+            <figcaption className="bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">문항 전체 원문 캡처 · {capture.page}쪽{question.questionCaptures!.length > 1 ? ` · ${index + 1}/${question.questionCaptures!.length}` : ''} · 문서에 첨부됨</figcaption>
+            <img src={capture.image} alt={`${question.number}번 문항의 발문, 그림자료, 선택지를 포함한 원문 캡처 ${index + 1}`} className="h-auto w-full bg-white object-contain" />
+          </figure>
+        ))}
         <Textarea ref={textRef} aria-label="문항 텍스트" value={question.text} onChange={(event) => onTextChange(event.target.value)} onSelect={(event) => setCursor(event.currentTarget.selectionStart)} className="min-h-40 resize-y border-0 bg-transparent p-0 text-sm leading-6 shadow-none focus-visible:ring-0" />
         <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <span className="mr-1 text-xs font-semibold text-muted-foreground">LaTeX 삽입</span>
@@ -514,14 +528,14 @@ function QuestionInspector({ question, canMerge, recognizing, onTextChange, onSt
           <Suspense fallback={<p className="text-sm text-muted-foreground">수식 렌더러를 불러오는 중…</p>}><MathText text={question.text} /></Suspense>
         </div>
         <Button variant="outline" className="mt-3 w-full" disabled={recognizing || !question.sourcePageImage} onClick={onRecognize}>
-          {recognizing ? <LoaderCircle className="animate-spin" /> : <Sparkles />} {recognizing ? '수식·그림 판독 중…' : '이 문항 수식·그림 다시 자동 인식'}
+          {recognizing ? <LoaderCircle className="animate-spin" /> : <Sparkles />} {recognizing ? '발문·수식 판독 중…' : '문항 전체에서 발문·수식 다시 판독'}
         </Button>
         <div className="mt-3 grid grid-cols-2 gap-2">
           <Button variant="outline" size="sm" disabled={cursor < 8 || cursor > question.text.length - 8} onClick={() => onSplit(cursor)}>커서에서 문항 나누기</Button>
           <Button variant="outline" size="sm" disabled={!canMerge} onClick={onMerge}>이전 문항과 합치기</Button>
         </div>
         <p className="mt-2 text-xs leading-5 text-muted-foreground">경계가 틀리면 새 문항이 시작되는 위치에 커서를 놓고 나누세요.</p>
-        {question.figureImage && (
+        {!question.questionCaptures?.length && question.figureImage && (
           <figure className="mt-4 overflow-hidden rounded-xl border">
             <figcaption className="bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">자동 감지한 문항 그림자료 · 문서에 첨부됨</figcaption>
             <img src={question.figureImage} alt={`${question.number}번 문항의 자동 감지 그림자료`} className="h-auto w-full bg-white object-contain" />
@@ -535,14 +549,15 @@ function QuestionInspector({ question, canMerge, recognizing, onTextChange, onSt
         )}
         <div className="my-5 h-px bg-border" />
         <div>
-          <label className="text-xs font-semibold text-muted-foreground">이 문항의 교과 후보</label>
-          <NativeSelect value={selectedSubject} onChange={(event) => onSubjectChange(event.target.value)} className="mt-2 w-full">
-            {subjectCandidates.map((candidate) => <NativeSelectOption key={candidate.key} value={candidate.key}>{candidate.label} · {candidate.confidence}%</NativeSelectOption>)}
+          <label htmlFor="question-subject" className="text-xs font-semibold text-muted-foreground">이 문항의 교과 후보</label>
+          <NativeSelect id="question-subject" value={selectedSubject} onChange={(event) => { onSubjectChange(event.target.value); setShowAllSubjects(false); }} className="mt-2 w-full">
+            {showAllSubjects ? allSubjects.map(([key, label]) => <NativeSelectOption key={key} value={key}>{label}</NativeSelectOption>) : subjectCandidates.map((candidate) => <NativeSelectOption key={candidate.key} value={candidate.key}>{candidate.label} · {candidate.confidence}%</NativeSelectOption>)}
           </NativeSelect>
+          <Button variant="ghost" size="sm" className="mt-1" onClick={() => setShowAllSubjects((value) => !value)}>{showAllSubjects ? '추천 교과만 보기' : '다른 교과 직접 선택'}</Button>
         </div>
         <div className="mt-5">
-          <label className="text-xs font-semibold text-muted-foreground">성취기준 후보</label>
-          <NativeSelect value={question.standardCode} onChange={(event) => onStandardChange(event.target.value)} className="mt-2 w-full">
+          <label htmlFor="question-standard" className="text-xs font-semibold text-muted-foreground">성취기준 후보</label>
+          <NativeSelect id="question-standard" value={question.standardCode} onChange={(event) => onStandardChange(event.target.value)} className="mt-2 w-full">
             {standardCandidates.map((candidate) => <NativeSelectOption key={candidate.code} value={candidate.code}>{candidate.code} · {candidate.confidence}%</NativeSelectOption>)}
           </NativeSelect>
         </div>

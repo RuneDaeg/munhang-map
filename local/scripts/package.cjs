@@ -13,6 +13,7 @@ for (const [source, target] of [
   ['local/문항맵.command', '문항맵.command'],
   ['local/문항맵.bat', '문항맵.bat'],
   ['local/사용법.txt', '사용법.txt'],
+  ['THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.md'],
   ['desktop/provider-client.cjs', 'provider-client.cjs'],
 ]) {
   fs.copyFileSync(path.join(projectRoot, source), path.join(output, target));
