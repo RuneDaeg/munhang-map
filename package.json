@@ -1,6 +1,6 @@
 {
   "name": "munhang-map",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "모의고사 PDF 문항 분리·수식 복원·성취기준 분류 도구",
   "author": "문항맵",
   "private": true,
@@ -19,7 +19,7 @@
     "local": "vite build --config desktop/vite.renderer.config.ts && node local/server.cjs",
     "local:package": "vite build --config desktop/vite.renderer.config.ts && node local/scripts/package.cjs",
     "test:providers": "node --test tests/provider-client.test.cjs",
-    "test:pdf": "node --test tests/pdf-analysis.test.cjs",
+    "test:pdf": "node --test tests/pdf-analysis.test.cjs tests/capture-editor.test.cjs",
     "lint": "oxlint",
     "format": "oxfmt"
   },

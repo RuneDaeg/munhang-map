@@ -31,6 +31,7 @@ export type AnalyzedQuestion = {
   visionEnhanced?: boolean;
   questionCaptures?: QuestionCapture[];
   captureWarning?: string;
+  captureReviewed?: boolean;
   examSubject?: ExamSubject;
   selectedSubjectKey?: string;
 };
@@ -126,6 +127,7 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
     pageCount: pdf.numPages,
     qualityWarning,
     questions,
+    sourcePages: pageImages,
   };
   } finally { await pdf.destroy(); }
 }

@@ -64,7 +64,10 @@ export function layoutPage(items: PageText[], width: number, height: number, pag
   // question stays in the body. Tall first-page headings may use more space.
   const masthead = headerLines.filter((line) => /영\s*역|교시|학력평가|수능|모의평가|학년도|성명|수험\s*번호/.test(line.text));
   const top = masthead.length ? Math.min(firstQuestionY - 3, Math.max(...masthead.map((line) => line.y + line.height)) + 5) : Math.min(height * 0.065, firstQuestionY - 3);
-  const bottom = height * 0.96;
+  const footer = allLines.find((line) => line.y > height * 0.88 && line.width < width * 0.2 && Math.abs((line.x + line.width / 2) / width - 0.5) < 0.1 && /^(?:페이지\s*)?\d{1,3}(?:\s*[/／]?\s*\d{1,3})?$/.test(line.text));
+  // Text-item height ends at the baseline; leave room for descenders in the
+  // final choices while stopping before the centered footer glyphs.
+  const bottom = footer ? Math.min(height * 0.96, footer.y - 2) : height * 0.96;
   const divisions = twoColumns ? [[width * 0.025, midpoint - width * 0.006], [midpoint + width * 0.006, width * 0.975]] : [[width * 0.025, width * 0.975]];
   return {
     page, width, height, headerText,

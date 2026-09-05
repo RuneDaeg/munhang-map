@@ -55,8 +55,8 @@ server.listen(0, HOST, () => {
   const address = server.address();
   if (!address || typeof address === 'string') return;
   localOrigin = `http://${HOST}:${address.port}`;
-  const initialPath = statusPayload().available ? '/' : '/settings.html';
-  const url = `${localOrigin}${initialPath}`;
+  // Capturing and reviewing PDFs does not require an API connection.
+  const url = `${localOrigin}/`;
   console.log(`\n문항맵 로컬 주소: ${url}`);
   console.log('이 창을 닫으면 문항맵도 종료됩니다.\n');
   openBrowser(url);

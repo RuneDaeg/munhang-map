@@ -44,6 +44,9 @@ import {
 } from '@/lib/pdf-analysis';
 import { downloadDocx, downloadHwpx } from '@/lib/document-export';
 import { enhanceQuestionsWithVision, getVisionStatus, openApiConnectionSettings, type VisionStatus } from '@/lib/vision-recognition';
+import { CaptureEditor } from '@/components/capture-editor';
+import { downloadReview, parseReview } from '@/lib/review-file';
+import type { QuestionCapture } from '@/lib/question-capture';
 
 const MathText = lazy(() => import('@/components/math-text'));
 
@@ -79,6 +82,9 @@ const sampleQuestions: AnalyzedQuestion[] = [
 
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
+  const reviewInputRef = useRef<HTMLInputElement>(null);
+  const [sourcePages, setSourcePages] = useState<string[]>([]);
+  const [editingCapture, setEditingCapture] = useState<number | null>(null);
   const [fileName, setFileName] = useState('예시 · 2026학년도 6월 모의평가_물리학Ⅰ.pdf');
   const [selected, setSelected] = useState(0);
   const [questionData, setQuestionData] = useState(sampleQuestions);
@@ -164,6 +170,8 @@ export default function Home() {
       return;
     }
     setFileName(file.name);
+    setSourcePages([]);
+    setEditingCapture(null);
     setQuestionData([]);
     setPageCount(0);
     setStatus('analyzing');
@@ -178,6 +186,7 @@ export default function Home() {
       const result = await analyzePdf(file, (page, total) => setAnalysisProgress(Math.round((page / total) * 60)));
       if (!result.questions.length) throw new Error('문항을 찾지 못했습니다. 텍스트가 포함된 모의고사 PDF인지 확인해 주세요.');
       setPageCount(result.pageCount);
+      setSourcePages(result.sourcePages);
       setQuestionData(result.questions);
       const vision = await getVisionStatus().catch(() => ({ available: false, model: '', desktop: false }));
       applyVisionStatus(vision);
@@ -213,6 +222,28 @@ export default function Home() {
 
   function updateSelectedText(text: string) {
     setQuestionData((current) => current.map((question, index) => index === selected ? { ...question, text, visionEnhanced: false } : question));
+  }
+
+  async function handleReviewFile(file: File) {
+    if (file.size > 80_000_000) { setError('검토 파일은 80MB 이하만 열 수 있습니다.'); return; }
+    setStatus('analyzing'); setEditingCapture(null); setError(''); setVisionError(''); setVisionProgress('저장한 캡처 범위를 불러오는 중');
+    try {
+      const review = await parseReview(await file.text());
+      const catalog = standards.length ? standards : await loadAchievementStandards();
+      const questions = review.questions.map((question) => {
+        const classified = classifyQuestion(question, catalog);
+        const chosen = classified.standardCandidates?.find((candidate) => candidate.code === question.standardCode);
+        return chosen ? { ...classified, standardCode: chosen.code, standard: chosen.standard, confidence: chosen.confidence, domain: chosen.domain } : classified;
+      });
+      setStandards(catalog); setQuestionData(questions); setSourcePages(review.sourcePages); setFileName(review.fileName);
+      setPageCount(review.sourcePages.length); setSelected(0); setIsDemo(false); setQualityWarning(''); setStatus('ready');
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '검토 파일을 열지 못했습니다.'); setStatus('error'); }
+    finally { setVisionProgress(''); }
+  }
+
+  function saveCaptureEdits(captures: QuestionCapture[]) {
+    setQuestionData((questions) => questions.map((question, index) => index === editingCapture ? { ...question, questionCaptures: captures, type: question.type.replace(/\d+쪽/, `${captures[0].page}쪽`), sourcePageImage: sourcePages[captures[0].page - 1], captureReviewed: true, captureWarning: undefined, visionEnhanced: false } : question));
+    setEditingCapture(null);
   }
 
   function updateSelectedStandard(code: string) {
@@ -268,8 +299,8 @@ export default function Home() {
     const secondNumber = marker ? Number(marker[1]) : question.number + 1;
     if (marker) secondText = secondText.slice(marker[0].length).trim();
     const captureWarning = '텍스트를 수동으로 나눴습니다. 캡처에는 분리 전 영역이 보존되어 있으므로 범위를 확인해 주세요.';
-    const first = classifyQuestion({ ...question, text: firstText, captureWarning, figureImage: undefined, visionEnhanced: false }, standards);
-    const second = classifyQuestion({ ...question, number: secondNumber, text: secondText, captureWarning, figureImage: undefined, visionEnhanced: false, type: question.type.replace('자동 추출', '수동 분리') }, standards);
+    const first = classifyQuestion({ ...question, text: firstText, captureWarning, captureReviewed: false, figureImage: undefined, visionEnhanced: false }, standards);
+    const second = classifyQuestion({ ...question, number: secondNumber, text: secondText, captureWarning, captureReviewed: false, figureImage: undefined, visionEnhanced: false, type: question.type.replace('자동 추출', '수동 분리') }, standards);
     setQuestionData((current) => [...current.slice(0, selected), first, second, ...current.slice(selected + 1)]);
     setSelected(selected + 1);
   }
@@ -279,7 +310,7 @@ export default function Home() {
     const previous = questionData[selected - 1];
     const current = questionData[selected];
     const questionCaptures = [...(previous.questionCaptures ?? []), ...(current.questionCaptures ?? [])].filter((capture, index, all) => all.findIndex((item) => item.image === capture.image) === index);
-    const merged = classifyQuestion({ ...previous, text: `${previous.text}\n${current.number}. ${current.text}`, questionCaptures, captureWarning: previous.captureWarning ?? current.captureWarning, figureImage: undefined, visionEnhanced: false, type: previous.type.replace('자동 추출', '수동 병합') }, standards);
+    const merged = classifyQuestion({ ...previous, text: `${previous.text}\n${current.number}. ${current.text}`, questionCaptures, captureReviewed: false, captureWarning: previous.captureWarning ?? current.captureWarning, figureImage: undefined, visionEnhanced: false, type: previous.type.replace('자동 추출', '수동 병합') }, standards);
     setQuestionData((items) => [...items.slice(0, selected - 1), merged, ...items.slice(selected + 1)]);
     setSelected(selected - 1);
   }
@@ -331,6 +362,7 @@ export default function Home() {
             </div>
           </button>
           <input ref={inputRef} type="file" accept="application/pdf" className="hidden" onClick={(event) => { event.currentTarget.value = ''; }} onChange={(event) => event.target.files?.[0] && void handleFile(event.target.files[0])} />
+          <input ref={reviewInputRef} type="file" accept=".json,application/json" className="hidden" onClick={(event) => { event.currentTarget.value = ''; }} onChange={(event) => event.target.files?.[0] && void handleReviewFile(event.target.files[0])} />
 
           <div className="mt-6 space-y-3">
             <label className="block text-xs font-medium text-white/55">교육과정</label>
@@ -386,6 +418,8 @@ export default function Home() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button variant="outline" onClick={() => inputRef.current?.click()}><Upload /> PDF 바꾸기</Button>
+                <Button variant="outline" onClick={() => reviewInputRef.current?.click()} disabled={status === 'analyzing'}>검토 파일 열기</Button>
+                <Button variant="outline" onClick={() => downloadReview(fileName, questionData, sourcePages)} disabled={status === 'analyzing' || !sourcePages.length}>검토 저장</Button>
                 <Button onClick={() => setExportOpen(true)} disabled={status === 'analyzing' || !questionData.length} className="bg-primary px-4 text-primary-foreground hover:bg-primary/90"><Download /> 문서 내보내기</Button>
               </div>
             </div>
@@ -437,7 +471,7 @@ export default function Home() {
                     <div className="border-t bg-muted/35 px-4 py-3 text-center text-xs text-muted-foreground">문항 텍스트와 추천 성취기준은 내보내기 전에 직접 수정할 수 있습니다</div>
                   </div>
 
-                  {questionData[selected] && <QuestionInspector question={questionData[selected]} catalog={standards} canMerge={selected > 0} recognizing={recognizingQuestion === questionData[selected].number} onTextChange={updateSelectedText} onStandardChange={updateSelectedStandard} onSubjectChange={updateSelectedSubject} onRefresh={refreshSelectedCandidates} onRecognize={() => void recognizeSelectedQuestion()} onSplit={splitSelectedQuestion} onMerge={mergeWithPrevious} />}
+                  {questionData[selected] && <QuestionInspector question={questionData[selected]} catalog={standards} canMerge={selected > 0} recognizing={recognizingQuestion === questionData[selected].number} canEditCapture={status !== 'analyzing' && recognizingQuestion === null && sourcePages.length > 0} onEditCapture={() => setEditingCapture(selected)} onTextChange={updateSelectedText} onStandardChange={updateSelectedStandard} onSubjectChange={updateSelectedSubject} onRefresh={refreshSelectedCandidates} onRecognize={() => void recognizeSelectedQuestion()} onSplit={splitSelectedQuestion} onMerge={mergeWithPrevious} />}
                 </div>
               </TabsContent>
 
@@ -458,6 +492,7 @@ export default function Home() {
         </div>
       </section>
       <ExportDialog open={exportOpen} onOpenChange={setExportOpen} fileName={fileName} questions={questionData} />
+      {editingCapture !== null && questionData[editingCapture] && <CaptureEditor key={editingCapture} question={questionData[editingCapture]} sourcePages={sourcePages} onClose={() => setEditingCapture(null)} onSave={saveCaptureEdits} />}
       <footer className="mx-auto flex max-w-[1540px] flex-col gap-2 px-6 pb-8 text-xs leading-5 text-muted-foreground sm:flex-row sm:justify-between">
         <span>성취기준 데이터: worksheet-grab · 2022 개정 교육과정</span>
         <span className="flex flex-wrap gap-x-4"><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/pblsketch/worksheet-grab/tree/090e24e331f779a2e329cf686c5c5444f9221ca9/data" target="_blank" rel="noreferrer">데이터 출처</a><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/jkf87/hwpx-skill" target="_blank" rel="noreferrer">HWPX 구현 참고</a><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/KaTeX/KaTeX" target="_blank" rel="noreferrer">KaTeX</a></span>
@@ -466,11 +501,13 @@ export default function Home() {
   );
 }
 
-function QuestionInspector({ question, catalog, canMerge, recognizing, onTextChange, onStandardChange, onSubjectChange, onRefresh, onRecognize, onSplit, onMerge }: {
+function QuestionInspector({ question, catalog, canMerge, recognizing, canEditCapture, onEditCapture, onTextChange, onStandardChange, onSubjectChange, onRefresh, onRecognize, onSplit, onMerge }: {
   question: AnalyzedQuestion;
   catalog: StandardRecord[];
   canMerge: boolean;
   recognizing: boolean;
+  canEditCapture: boolean;
+  onEditCapture: () => void;
   onTextChange: (text: string) => void;
   onStandardChange: (code: string) => void;
   onSubjectChange: (subjectKey: string) => void;
@@ -506,6 +543,7 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, onTextCha
       <div className="p-5">
         {question.examSubject && <p className="mb-3 rounded-lg bg-primary/5 px-3 py-2 text-sm text-primary">{question.examSubject.page}쪽 머리말에서 ‘{question.examSubject.label}’ 감지 · {question.selectedSubjectKey ? '직접 선택한 교과를 우선 반영' : '관련 교과 안에서 성취기준 추천'}</p>}
         {question.captureWarning && <output className="mb-3 block rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{question.captureWarning}</output>}
+        <div className="mb-3 flex flex-wrap items-center gap-2"><Button variant="outline" disabled={!canEditCapture} onClick={onEditCapture}>캡처 범위 수정</Button>{question.captureReviewed && <Badge className="bg-emerald-100 text-emerald-800">범위 확인 완료</Badge>}</div>
         {question.questionCaptures?.map((capture, index) => (
           <figure key={`${capture.page}-${index}`} className="mb-4 overflow-hidden rounded-xl border">
             <figcaption className="bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">문항 전체 원문 캡처 · {capture.page}쪽{question.questionCaptures!.length > 1 ? ` · ${index + 1}/${question.questionCaptures!.length}` : ''} · 문서에 첨부됨</figcaption>

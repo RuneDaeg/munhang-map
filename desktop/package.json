@@ -1,6 +1,6 @@
 {
   "name": "munhang-map-desktop",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "모의고사 PDF 문항 분리·수식 복원·성취기준 분류 도구",
   "author": "문항맵",
   "private": true,
