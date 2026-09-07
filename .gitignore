@@ -41,3 +41,12 @@ next-env.d.ts
 /desktop/build/icon.iconset/
 /desktop/renderer-dist/
 *.tsbuildinfo
+
+# Private exam files, saved reviews, and local runtime credentials/data
+*.pdf
+*_검토.json
+question-bank/
+api-key.enc
+local-master-key.bin
+/settings.json
+*.key

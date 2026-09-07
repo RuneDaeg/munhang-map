@@ -9,6 +9,7 @@ const providerClientPath = fs.existsSync(path.join(__dirname, 'provider-client.c
   ? path.join(__dirname, 'provider-client.cjs')
   : path.join(__dirname, '..', 'desktop', 'provider-client.cjs');
 const { PROVIDERS, keyHint, normalizeConnection, providerInfo, recognize } = require(providerClientPath);
+const { createQuestionBank } = require('./question-bank.cjs');
 
 const HOST = '127.0.0.1';
 const SETTINGS_FILE = path.join(dataDirectory(), 'settings.json');
@@ -20,12 +21,23 @@ const rendererRoot = fs.existsSync(path.join(__dirname, 'renderer'))
   : path.join(__dirname, '..', 'desktop', 'renderer-dist');
 const settingsHtml = path.join(__dirname, 'settings.html');
 const state = loadState();
+const questionBank = createQuestionBank(path.join(dataDirectory(), 'question-bank'));
 let runningRecognition = false;
 let localOrigin = '';
 
 const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url || '/', localOrigin || `http://${HOST}`);
+    if (url.pathname === '/api/question-bank' || url.pathname === '/api/question-bank/selection') {
+      if (!localOrigin || request.headers.host !== new URL(localOrigin).host || request.headers['sec-fetch-site'] === 'cross-site') throw new Error('문항맵 로컬 화면에서만 문제함에 접근할 수 있습니다.');
+      if (request.method === 'GET' && url.pathname === '/api/question-bank') return sendJson(response, 200, { items: questionBank.list(), storageLabel: '이 컴퓨터의 문항맵 데이터 폴더' });
+      if (request.method === 'POST') {
+        requireLocalOrigin(request);
+        const input = await readJsonBody(request, url.pathname.endsWith('/selection') ? 50000 : 85000000);
+        return sendJson(response, 200, url.pathname.endsWith('/selection') ? { questions: questionBank.select(input.ids) } : questionBank.save(input));
+      }
+      return sendText(response, 405, 'Method not allowed');
+    }
     if (request.method === 'GET' && url.pathname === '/api/recognize') return sendJson(response, 200, statusPayload());
     if (request.method === 'GET' && url.pathname === '/api/settings') return sendJson(response, 200, settingsPayload());
     if (request.method === 'POST' && url.pathname === '/api/settings') {

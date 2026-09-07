@@ -34,6 +34,7 @@ export type AnalyzedQuestion = {
   captureReviewed?: boolean;
   examSubject?: ExamSubject;
   selectedSubjectKey?: string;
+  sourceFileName?: string;
 };
 
 // The curriculum catalogue is the pinned worksheet-grab dataset documented in
@@ -67,7 +68,7 @@ export function loadAchievementStandards() {
   return standardsPromise;
 }
 
-export async function analyzePdf(file: File, onProgress?: (page: number, total: number) => void) {
+export async function analyzePdf(file: File, onProgress?: (page: number, total: number) => void, onCaptureProgress?: (completed: number, total: number) => void) {
   const [pdfjs, allStandards] = await Promise.all([import('pdfjs-dist'), loadAchievementStandards()]);
   pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
   const source = new Uint8Array(await file.arrayBuffer());
@@ -109,6 +110,7 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
     if (previousSubject) subjects.set(page.page, previousSubject);
   }
   const questions: AnalyzedQuestion[] = [];
+  onCaptureProgress?.(0, Math.min(chunks.length, 80));
   for (const chunk of chunks.slice(0, 80)) {
     const questionCaptures: QuestionCapture[] = [];
     for (const region of chunk.regions) questionCaptures.push({ ...region, image: await cropPage(pageImages[region.page - 1], region.box) });
@@ -122,6 +124,7 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
       captureWarning: chunk.warning,
       examSubject: subjects.get(chunk.page),
     }, allStandards));
+    onCaptureProgress?.(questions.length, Math.min(chunks.length, 80));
   }
   return {
     pageCount: pdf.numPages,

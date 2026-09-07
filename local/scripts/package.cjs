@@ -9,6 +9,7 @@ fs.mkdirSync(output, { recursive: true });
 fs.cpSync(path.join(projectRoot, 'desktop', 'renderer-dist'), path.join(output, 'renderer'), { recursive: true });
 for (const [source, target] of [
   ['local/server.cjs', 'server.cjs'],
+  ['local/question-bank.cjs', 'question-bank.cjs'],
   ['local/settings.html', 'settings.html'],
   ['local/문항맵.command', '문항맵.command'],
   ['local/문항맵.bat', '문항맵.bat'],

@@ -125,14 +125,20 @@ function unzipStored(bytes) {
 test('DOCX and HWPX embed all continuation captures and support images above JS spread limits', () => {
   const jpeg = Buffer.alloc(300000, 17); jpeg[0] = 255; jpeg[1] = 216;
   const images = [jpeg, Buffer.from([255, 216, 255, 217])].map((data) => `data:image/jpeg;base64,${data.toString('base64')}`);
-  const question = { ...blankQuestion, questionCaptures: images.map((image, i) => ({ page: i + 1, box: [0, 0, 1, 1], image })) };
+  const question = { ...blankQuestion, text: '\text{그림 위 발문}\n' + String.raw`\text{그림 아래 질문} $\frac{a}{b}$`, questionCaptures: images.map((image, i) => ({ page: i + 1, box: [0, 0, 1, 1], image })) };
   const docx = unzipStored(createDocxBytes('검증', [question]));
   assert.equal([...docx.keys()].filter((name) => name.startsWith('word/media/')).length, 2);
   assert.equal((docx.get('word/document.xml').toString().match(/<w:drawing>/g) ?? []).length, 2);
+  assert.doesNotMatch(docx.get('word/document.xml').toString(), /ext\{|\t/);
+  assert.match(docx.get('word/document.xml').toString(), /그림 위 발문<\/w:t><\/w:r><\/w:p>\s*<w:p>/);
   const template = new Map();
   const root = path.join(__dirname, '../public/hwpx-template');
   for (const file of fs.readdirSync(root, { recursive: true })) if (fs.statSync(path.join(root, file)).isFile()) template.set(file, fs.readFileSync(path.join(root, file)));
   const hwpx = unzipStored(createHwpxBytesFromTemplate('검증', [question], template));
   assert.equal([...hwpx.keys()].filter((name) => name.startsWith('BinData/')).length, 2);
   assert.equal((hwpx.get('Contents/section0.xml').toString().match(/<hp:pic /g) ?? []).length, 2);
+  for (const name of ['Contents/section0.xml', 'Preview/PrvText.txt']) {
+    assert.doesNotMatch(hwpx.get(name).toString(), /ext\{|\t/);
+    assert.ok(hwpx.get(name).toString().includes(String.raw`그림 아래 질문 $\frac{a}{b}$`));
+  }
 });

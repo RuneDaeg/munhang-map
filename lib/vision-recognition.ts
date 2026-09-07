@@ -1,5 +1,6 @@
 import type { AnalyzedQuestion } from './pdf-analysis';
 import { joinCaptures } from './question-capture';
+import { normalizeQuestionText } from './math-normalization';
 
 type NormalizedBox = [number, number, number, number];
 
@@ -119,18 +120,19 @@ async function recognizeImage(image: string, questions: VisionRequestQuestion[])
 }
 
 function completeQuestionText(original: string, recognized: VisionItem) {
+  const normalizedOriginal = normalizeQuestionText(original);
   const structured = [
     (recognized.indirectStem ?? '').trim(),
     (recognized.directStem ?? '').trim(),
     ...(Array.isArray(recognized.choices) ? recognized.choices : []).filter((choice) => typeof choice === 'string').map((choice) => choice.trim()),
-  ].filter(Boolean).join('\n');
-  const full = (recognized.latexText ?? '').trim();
+  ].filter(Boolean).map(normalizeQuestionText).join('\n');
+  const full = normalizeQuestionText((recognized.latexText ?? '').trim());
   const candidate = readableLength(structured) > readableLength(full) ? structured : full;
-  if (!candidate) return original;
+  if (!candidate) return normalizedOriginal;
 
-  const originalLength = readableLength(original);
+  const originalLength = readableLength(normalizedOriginal);
   const candidateLength = readableLength(candidate);
-  if (originalLength >= 50 && candidateLength < originalLength * 0.62) return original;
+  if (originalLength >= 50 && candidateLength < originalLength * 0.62) return normalizedOriginal;
   return candidate;
 }
 

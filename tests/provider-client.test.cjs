@@ -51,7 +51,17 @@ void test('recognizes with OpenAI, Anthropic, Gemini, and compatible response fo
   ];
 
   for (const item of cases) {
-    global.fetch = async () => new Response(JSON.stringify(item.response), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    global.fetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      const prompt = item.connection.provider === 'openai' ? body.input[0].content[0].text
+        : item.connection.provider === 'gemini' ? body.contents[0].parts[0].text
+          : body.messages[0].content.find((part) => part.type === 'text').text;
+      assert.match(prompt, /일반 문장·발문·선택지·단순 숫자와 단위/);
+      assert.match(prompt, /일반 자료표는 LaTeX array 대신/);
+      const example = prompt.match(/올바른 JSON 예: (\{[^\n]*?\}) 이 예/)[1];
+      assert.equal(JSON.parse(example).latexText, String.raw`속력은 60 km/h이다. 식은 $\frac{d}{t}$이다.`);
+      return new Response(JSON.stringify(item.response), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
     const output = await recognize(item.connection, { image, questions });
     assert.equal(output.result.questions[0].number, 1);
     assert.deepEqual([output.usage.inputTokens, output.usage.outputTokens], item.expected);

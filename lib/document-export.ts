@@ -1,4 +1,5 @@
 import type { AnalyzedQuestion } from './pdf-analysis';
+import { normalizeQuestionText } from './math-normalization';
 
 // HWPX packaging follows jkf87/hwpx-skill Workflow A and uses its MIT base
 // skeleton. Full attribution and pinned revisions are in THIRD_PARTY_NOTICES.md.
@@ -6,6 +7,47 @@ import type { AnalyzedQuestion } from './pdf-analysis';
 type ZipEntry = { name: string; data: Uint8Array };
 type EmbeddedPageImage = { itemId: string; fileName: string; data: Uint8Array; width: number; height: number };
 const encoder = new TextEncoder();
+
+export function groupQuestionsByStandard(questions: AnalyzedQuestion[]) {
+  const groups = new Map<string, { code: string; domain: string; questions: AnalyzedQuestion[] }>();
+  for (const question of questions) {
+    const code = question.standardCode.trim() || '미분류';
+    const domain = code === '미분류' ? '분류 확인 필요' : question.domain.trim();
+    const key = JSON.stringify([domain, code]);
+    if (!groups.has(key)) groups.set(key, { code, domain, questions: [] });
+    groups.get(key)!.questions.push(question);
+  }
+  return [...groups.values()].sort((a, b) => `${a.domain} ${a.code}`.localeCompare(`${b.domain} ${b.code}`, 'ko'));
+}
+
+export async function createStandardArchive(title: string, questions: AnalyzedQuestion[], format: 'docx' | 'hwpx', onProgress?: (completed: number, total: number) => void) {
+  if (!questions.length) throw new Error('내보낼 문항을 선택해 주세요.');
+  const groups = groupQuestionsByStandard(questions);
+  const entries: ZipEntry[] = [];
+  const csv = [['파일', '성취기준', '교과', '원본 PDF', '원본 문항 번호']];
+  let totalBytes = 0;
+  onProgress?.(0, groups.length);
+  for (const [index, group] of groups.entries()) {
+    // A numbered prefix prevents collisions after filesystem-safe truncation.
+    // oxlint-disable-next-line no-control-regex -- Windows filenames cannot contain control characters.
+    const name = `${String(index + 1).padStart(3, '0')}_${`${group.code}_${group.domain}`.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(0, 100)}.${format}`;
+    const heading = `${title.replace(/\.pdf$/i, '')} · ${group.code} · ${group.domain}`;
+    const data = format === 'docx' ? createDocxBytes(heading, group.questions) : await createHwpxBytes(heading, group.questions);
+    totalBytes += data.length;
+    if (totalBytes > 150_000_000) throw new Error('문서 묶음이 150MB를 넘습니다. 선택 문항을 나누어 내보내 주세요.');
+    entries.push({ name, data });
+    for (const question of group.questions) csv.push([name, group.code, group.domain, question.sourceFileName || title, String(question.number)]);
+    onProgress?.(index + 1, groups.length);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  const csvCell = (value: string) => `"${(/^[=+@\-\t\r]/.test(value) ? `'${value}` : value).replace(/"/g, '""')}"`;
+  entries.push(entry('문항목록.csv', '\uFEFF' + csv.map((row) => row.map(csvCell).join(',')).join('\r\n')));
+  return zip(entries);
+}
+
+export async function downloadStandardArchive(title: string, questions: AnalyzedQuestion[], format: 'docx' | 'hwpx', onProgress?: (completed: number, total: number) => void) {
+  saveBlob(await createStandardArchive(title, questions, format, onProgress), safeName(`${title.replace(/\.pdf$/i, '')}_성취기준별_${format}`, 'zip'), 'application/zip');
+}
 
 export function downloadDocx(title: string, questions: AnalyzedQuestion[]) {
   saveBlob(createDocxBytes(title, questions), safeName(title, 'docx'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
@@ -15,7 +57,8 @@ export function createDocxBytes(title: string, questions: AnalyzedQuestion[]) {
   const images = collectPageImages(questions);
   const body = questions.map((question, index) => `
     <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>${xml(`${question.number}번 문항`)}</w:t></w:r></w:p>
-    <w:p><w:r><w:t xml:space="preserve">${xml(question.text)}</w:t></w:r></w:p>
+    ${question.sourceFileName ? `<w:p><w:r><w:t>${xml(`원본: ${question.sourceFileName} · ${question.number}번`)}</w:t></w:r></w:p>` : ''}
+    ${normalizeQuestionText(question.text).split(/\r?\n/).map((line) => `<w:p><w:r><w:t xml:space="preserve">${xml(line)}</w:t></w:r></w:p>`).join('')}
     <w:p><w:pPr><w:pStyle w:val="Standard"/></w:pPr><w:r><w:t>${xml(`${question.standardCode} ${question.domain}`)}</w:t></w:r></w:p>
     <w:p><w:r><w:t>${xml(question.standard)}</w:t></w:r></w:p>
     ${(images.byQuestion.get(index) ?? []).map((image, imageIndex) => `<w:p><w:r><w:rPr><w:b/><w:color w:val="64748B"/></w:rPr><w:t>${question.questionCaptures?.length ? '문항 전체 원문 캡처' : '문항 그림자료'}${question.captureWarning ? ' · 범위 확인 필요' : ''}</w:t></w:r></w:p>${docxImageParagraph(`rIdImage${image.itemId}`, index * 100 + imageIndex + 1, image)}`).join('')}`).join('');
@@ -72,7 +115,7 @@ export function createHwpxBytesFromTemplate(title: string, questions: AnalyzedQu
     .replace('name="creator" content="text"', 'name="creator" content="문항맵"')
     .replace('name="lastsaveby" content="text"', 'name="lastsaveby" content="문항맵"')
     .replace('</opf:manifest>', `${imageManifest}</opf:manifest>`);
-  const preview = [title, `문항 ${questions.length}개 · 성취기준별 자동 분류`, ...questions.flatMap((question) => [`${question.number}번 문항`, question.text, question.standardCode, question.standard, question.questionCaptures?.length ? '[문항 전체 원문 캡처 포함]' : question.figureImage ? '[문항 그림자료 포함]' : '']), '성취기준 출처: pblsketch/worksheet-grab'].join('\n');
+  const preview = [title, `문항 ${questions.length}개 · 성취기준별 자동 분류`, ...questions.flatMap((question) => [`${question.number}번 문항`, normalizeQuestionText(question.text), question.standardCode, question.standard, question.questionCaptures?.length ? '[문항 전체 원문 캡처 포함]' : question.figureImage ? '[문항 그림자료 포함]' : '']), '성취기준 출처: pblsketch/worksheet-grab'].join('\n');
   const replacements = new Map<string, Uint8Array>([
     ['Contents/section0.xml', encoder.encode(section)],
     ['Contents/content.hpf', encoder.encode(content)],
@@ -95,7 +138,8 @@ function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestio
   const parts = [first, paragraph(title, '5'), paragraph(`문항 ${questions.length}개 · 성취기준별 자동 분류`, '6'), paragraph('')];
   for (const [index, question] of questions.entries()) {
     parts.push(paragraph(`${question.number}번 문항`, '6'));
-    for (const line of question.text.split(/\r?\n/).filter(Boolean)) parts.push(paragraph(line));
+    if (question.sourceFileName) parts.push(paragraph(`원본: ${question.sourceFileName} · ${question.number}번`, '2'));
+    for (const line of normalizeQuestionText(question.text).split(/\r?\n/).filter(Boolean)) parts.push(paragraph(line));
     parts.push(paragraph(`${question.standardCode}  ${question.domain}`, '6'));
     parts.push(paragraph(`- ${question.standard}`));
     for (const image of images.get(index) ?? []) {

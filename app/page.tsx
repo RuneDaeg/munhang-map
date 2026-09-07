@@ -8,7 +8,6 @@ import {
   ChevronRight,
   CircleHelp,
   Download,
-  FileDown,
   FileText,
   FolderOpen,
   LayoutGrid,
@@ -36,17 +35,21 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import {
-  analyzePdf,
   classifyQuestion,
   loadAchievementStandards,
   type AnalyzedQuestion,
   type StandardRecord,
 } from '@/lib/pdf-analysis';
-import { downloadDocx, downloadHwpx } from '@/lib/document-export';
 import { enhanceQuestionsWithVision, getVisionStatus, openApiConnectionSettings, type VisionStatus } from '@/lib/vision-recognition';
 import { CaptureEditor } from '@/components/capture-editor';
 import { downloadReview, parseReview } from '@/lib/review-file';
 import type { QuestionCapture } from '@/lib/question-capture';
+import { normalizeQuestionText } from '@/lib/math-normalization';
+import { runExamAnalysis, type AnalysisProgress as ProgressState } from '@/lib/analysis-workflow';
+import { AnalysisProgress } from '@/components/analysis-progress';
+import { ExportDialog } from '@/components/export-dialog';
+import { QuestionBank } from '@/components/question-bank';
+import { saveToQuestionBank } from '@/lib/question-bank';
 
 const MathText = lazy(() => import('@/components/math-text'));
 
@@ -107,6 +110,12 @@ export default function Home() {
   const [visionProgress, setVisionProgress] = useState('');
   const [visionError, setVisionError] = useState('');
   const [recognizingQuestion, setRecognizingQuestion] = useState<number | null>(null);
+  const [analysisState, setAnalysisState] = useState<ProgressState | null>(null);
+  const [bankOpen, setBankOpen] = useState(false);
+  const [savingBank, setSavingBank] = useState(false);
+  const [bankMessage, setBankMessage] = useState('');
+  const operationRef = useRef(false);
+  const busy = status === 'analyzing' || recognizingQuestion !== null || savingBank;
 
   useEffect(() => {
     void loadAchievementStandards().then((items) => {
@@ -164,60 +173,34 @@ export default function Home() {
   }, [fileName, questionData]);
 
   async function handleFile(file: File) {
-    if (!file.name.toLowerCase().endsWith('.pdf')) {
-      setError('PDF 파일만 선택할 수 있습니다.');
-      setStatus('error');
-      return;
-    }
-    setFileName(file.name);
-    setSourcePages([]);
-    setEditingCapture(null);
-    setQuestionData([]);
-    setPageCount(0);
-    setStatus('analyzing');
-    setAnalysisProgress(0);
-    setIsDemo(false);
-    setError('');
-    setQualityWarning('');
-    setVisionError('');
-    setVisionProgress('');
-    setSelected(0);
+    if (operationRef.current || recognizingQuestion !== null || savingBank) return;
+    if (!file.name.toLowerCase().endsWith('.pdf')) { setError('PDF 파일만 선택할 수 있습니다.'); return; }
+    operationRef.current = true;
+    setFileName(file.name); setSourcePages([]); setEditingCapture(null); setQuestionData([]); setPageCount(0);
+    setStatus('analyzing'); setAnalysisProgress(0); setAnalysisState(null); setIsDemo(false);
+    setError(''); setQualityWarning(''); setVisionError(''); setVisionProgress(''); setBankMessage(''); setSelected(0);
     try {
-      const result = await analyzePdf(file, (page, total) => setAnalysisProgress(Math.round((page / total) * 60)));
-      if (!result.questions.length) throw new Error('문항을 찾지 못했습니다. 텍스트가 포함된 모의고사 PDF인지 확인해 주세요.');
-      setPageCount(result.pageCount);
-      setSourcePages(result.sourcePages);
-      setQuestionData(result.questions);
-      const vision = await getVisionStatus().catch(() => ({ available: false, model: '', desktop: false }));
-      applyVisionStatus(vision);
-      let finalQuestions = result.questions;
-      let warning = result.qualityWarning;
-      if (vision.available) {
-        setVisionProgress('문항 전체 캡처에서 발문과 수식을 판독하는 중');
-        const enhanced = await enhanceQuestionsWithVision(result.questions, (completed, total) => {
-          setAnalysisProgress(60 + Math.round((completed / Math.max(total, 1)) * 40));
-          setVisionProgress(`발문·수식 자동 인식 · ${completed}/${total}문항`);
-        });
-        const catalog = standards.length ? standards : await loadAchievementStandards();
-        setStandards(catalog);
-        finalQuestions = enhanced.questions.map((question) => classifyQuestion(question, catalog));
-        void getVisionStatus().then(applyVisionStatus).catch(() => undefined);
-        if (enhanced.failures.length) {
-          const message = `${enhanced.failures.length}개 문항은 자동 판독을 완료하지 못했습니다. 원문 캡처는 보존되었습니다.`;
-          setVisionError(message);
-          warning = [warning, message].filter(Boolean).join(' ');
-        }
-      } else {
-        setAnalysisProgress(100);
-      }
-      setQualityWarning(warning);
-      setQuestionData(finalQuestions);
-      setVisionProgress('');
-      setStatus('ready');
+      const result = await runExamAnalysis(file, (progress) => {
+        setAnalysisState(progress); setAnalysisProgress(progress.percent); setVisionProgress(progress.detail);
+      });
+      setPageCount(result.pageCount); setSourcePages(result.sourcePages); setStandards(result.catalog);
+      applyVisionStatus(result.vision);
+      setQualityWarning(result.qualityWarning); setQuestionData(result.questions);
+      setVisionProgress(''); setStatus('ready');
+      void getVisionStatus().then(applyVisionStatus).catch(() => undefined);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'PDF 분석 중 오류가 발생했습니다.');
-      setStatus('error');
-    }
+      setError(reason instanceof Error ? reason.message : 'PDF 분석 중 오류가 발생했습니다.'); setStatus('error');
+    } finally { operationRef.current = false; }
+  }
+
+  async function saveCurrentToBank() {
+    if (status !== 'ready' || recognizingQuestion !== null || savingBank || isDemo) return;
+    setSavingBank(true); setBankMessage('');
+    try {
+      const result = await saveToQuestionBank(fileName, questionData, sourcePages);
+      setBankMessage(`${result.saved}문항을 내 문제함에 ${result.updated ? '업데이트' : '저장'}했습니다. 다른 PDF의 문항과 함께 선택해 내보낼 수 있습니다.`);
+    } catch (reason) { setBankMessage(reason instanceof Error ? reason.message : '문제함에 저장하지 못했습니다.'); }
+    finally { setSavingBank(false); }
   }
 
   function updateSelectedText(text: string) {
@@ -225,7 +208,9 @@ export default function Home() {
   }
 
   async function handleReviewFile(file: File) {
+    if (operationRef.current || recognizingQuestion !== null || savingBank) return;
     if (file.size > 80_000_000) { setError('검토 파일은 80MB 이하만 열 수 있습니다.'); return; }
+    operationRef.current = true; setAnalysisState(null); setAnalysisProgress(0); setBankMessage('');
     setStatus('analyzing'); setEditingCapture(null); setError(''); setVisionError(''); setVisionProgress('저장한 캡처 범위를 불러오는 중');
     try {
       const review = await parseReview(await file.text());
@@ -238,7 +223,7 @@ export default function Home() {
       setStandards(catalog); setQuestionData(questions); setSourcePages(review.sourcePages); setFileName(review.fileName);
       setPageCount(review.sourcePages.length); setSelected(0); setIsDemo(false); setQualityWarning(''); setStatus('ready');
     } catch (reason) { setError(reason instanceof Error ? reason.message : '검토 파일을 열지 못했습니다.'); setStatus('error'); }
-    finally { setVisionProgress(''); }
+    finally { setVisionProgress(''); operationRef.current = false; }
   }
 
   function saveCaptureEdits(captures: QuestionCapture[]) {
@@ -352,7 +337,7 @@ export default function Home() {
             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-white/55">현재 작업</p>
             <Button variant="ghost" size="icon-sm" className="text-white hover:bg-white/10 hover:text-white" aria-label="더보기"><MoreHorizontal /></Button>
           </div>
-          <button onClick={() => inputRef.current?.click()} className="mt-3 w-full rounded-2xl border border-white/12 bg-white/7 p-4 text-left transition hover:bg-white/10">
+          <button aria-label="현재 PDF 정보 · 다른 PDF 선택" disabled={busy} onClick={() => inputRef.current?.click()} className="mt-3 w-full rounded-2xl border border-white/12 bg-white/7 p-4 text-left transition hover:bg-white/10 disabled:opacity-60">
             <div className="flex items-start gap-3">
               <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-accent text-accent-foreground"><FileText className="size-5" /></span>
               <div className="min-w-0">
@@ -361,12 +346,13 @@ export default function Home() {
               </div>
             </div>
           </button>
-          <input ref={inputRef} type="file" accept="application/pdf" className="hidden" onClick={(event) => { event.currentTarget.value = ''; }} onChange={(event) => event.target.files?.[0] && void handleFile(event.target.files[0])} />
-          <input ref={reviewInputRef} type="file" accept=".json,application/json" className="hidden" onClick={(event) => { event.currentTarget.value = ''; }} onChange={(event) => event.target.files?.[0] && void handleReviewFile(event.target.files[0])} />
+          <input ref={inputRef} aria-label="PDF 파일 선택" disabled={busy} type="file" accept="application/pdf" className="hidden" onClick={(event) => { event.currentTarget.value = ''; }} onChange={(event) => event.target.files?.[0] && void handleFile(event.target.files[0])} />
+          <input ref={reviewInputRef} aria-label="검토 파일 선택" disabled={busy} type="file" accept=".json,application/json" className="hidden" onClick={(event) => { event.currentTarget.value = ''; }} onChange={(event) => event.target.files?.[0] && void handleReviewFile(event.target.files[0])} />
+          <Button variant="outline" disabled={busy} onClick={() => setBankOpen(true)} className="mt-3 w-full border-white/20 bg-white/10 text-white hover:bg-white/20 hover:text-white"><FolderOpen />내 문제함</Button>
 
           <div className="mt-6 space-y-3">
-            <label className="block text-xs font-medium text-white/55">교육과정</label>
-            <NativeSelect className="w-full [&_select]:border-white/12 [&_select]:bg-white/7 [&_select]:text-white">
+            <label htmlFor="curriculum" className="block text-xs font-medium text-white/55">교육과정</label>
+            <NativeSelect id="curriculum" className="w-full [&_select]:border-white/12 [&_select]:bg-white/7 [&_select]:text-white">
               <NativeSelectOption>2022 개정 교육과정 · 원본 CSV</NativeSelectOption>
             </NativeSelect>
             <div className="rounded-xl border border-white/10 bg-white/6 p-3">
@@ -384,7 +370,7 @@ export default function Home() {
                   ? 'API 연결을 설정하면 자동 판독을 사용할 수 있습니다.'
                   : '.env.local에 OPENAI_API_KEY를 설정하면 활성화됩니다.'}</p>
               {visionAvailable && visionUsage && <p className="mt-1 text-xs leading-5 text-white/65">토큰 {formatCompact(visionUsage.inputTokens + visionUsage.outputTokens)} · 앱 추정 ${visionUsage.estimatedUsd.toFixed(4)}{visionRemaining !== null ? ` · 잔액 $${visionRemaining.toFixed(4)}` : ''}</p>}
-              {(desktopMode || localMode) && <button type="button" onClick={() => void openApiConnectionSettings()} className="mt-2 text-xs font-semibold text-accent underline decoration-white/25 underline-offset-4">API 연결 {visionAvailable ? '변경·사용량 보기' : '설정'}</button>}
+              {(desktopMode || localMode) && <button type="button" disabled={busy} onClick={() => void openApiConnectionSettings()} className="mt-2 text-xs font-semibold text-accent underline decoration-white/25 underline-offset-4 disabled:opacity-50">API 연결 {visionAvailable ? '변경·사용량 보기' : '설정'}</button>}
             </div>
           </div>
 
@@ -410,21 +396,23 @@ export default function Home() {
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <div>
                 <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">{status === 'analyzing' ? <LoaderCircle className="size-4 animate-spin text-primary" /> : <ScanSearch className="size-4 text-primary" />} {status === 'analyzing' ? (visionProgress || `PDF에서 문항을 찾는 중 · ${analysisProgress}%`) : status === 'error' ? '분석을 완료하지 못했습니다' : isDemo ? '예시 분석 결과' : '새 PDF 분석 완료'}</div>
-                <h1 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-[28px]">문항과 성취기준을 확인하세요</h1>
+                <h1 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-[28px]">{status === 'analyzing' ? '문항·수식 분석을 진행하고 있습니다' : '문항과 성취기준을 확인하세요'}</h1>
                 {!isDemo && questionData.some((question) => question.examSubject) && <p className="mt-2 text-sm font-medium text-primary">시험지 상단 과목 반영: {[...new Set(questionData.map((question) => question.examSubject?.label).filter(Boolean))].join(' · ')}</p>}
                 {error && <p role="alert" className="mt-2 max-w-2xl text-sm font-medium leading-6 text-destructive">{error} 다른 PDF를 선택하면 새로 분석합니다.</p>}
-                {qualityWarning && <p role="status" className="mt-2 max-w-2xl rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium leading-6 text-amber-800">{qualityWarning}</p>}
+                {qualityWarning && <output className="mt-2 block max-w-2xl rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium leading-6 text-amber-800">{qualityWarning}</output>}
                 {visionError && <p role="alert" className="mt-2 max-w-2xl rounded-lg bg-red-50 px-3 py-2 text-sm font-medium leading-6 text-red-700">{visionError}</p>}
+                {bankMessage && <output className="mt-2 block max-w-2xl text-sm leading-6 text-primary">{bankMessage}</output>}
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" onClick={() => inputRef.current?.click()}><Upload /> PDF 바꾸기</Button>
-                <Button variant="outline" onClick={() => reviewInputRef.current?.click()} disabled={status === 'analyzing'}>검토 파일 열기</Button>
-                <Button variant="outline" onClick={() => downloadReview(fileName, questionData, sourcePages)} disabled={status === 'analyzing' || !sourcePages.length}>검토 저장</Button>
-                <Button onClick={() => setExportOpen(true)} disabled={status === 'analyzing' || !questionData.length} className="bg-primary px-4 text-primary-foreground hover:bg-primary/90"><Download /> 문서 내보내기</Button>
+                <Button variant="outline" disabled={busy} onClick={() => inputRef.current?.click()}><Upload /> PDF 바꾸기</Button>
+                <Button variant="outline" onClick={() => reviewInputRef.current?.click()} disabled={busy}>검토 파일 열기</Button>
+                <Button variant="outline" onClick={() => downloadReview(fileName, questionData, sourcePages)} disabled={busy || !sourcePages.length}>검토 저장</Button>
+                <Button variant="outline" onClick={() => void saveCurrentToBank()} disabled={busy || isDemo || status !== 'ready' || !sourcePages.length || !questionData.length}>{savingBank ? <LoaderCircle className="animate-spin" /> : <FolderOpen />}{savingBank ? '문제함 저장 중…' : '문제함에 저장'}</Button>
+                <Button onClick={() => setExportOpen(true)} disabled={busy || !questionData.length} className="bg-primary px-4 text-primary-foreground hover:bg-primary/90"><Download /> 문서 내보내기</Button>
               </div>
             </div>
 
-            <Tabs defaultValue="questions" className="mt-1">
+            {status === 'analyzing' ? <AnalysisProgress progress={analysisState} detail={visionProgress} /> : <Tabs defaultValue="questions" className="mt-1">
               <div className="flex flex-col gap-3 border-b sm:flex-row sm:items-center sm:justify-between">
                 <TabsList variant="line" className="h-10">
                   <TabsTrigger value="questions" className="px-3"><LayoutGrid /> 문항별 보기</TabsTrigger>
@@ -447,9 +435,9 @@ export default function Home() {
                       {!questionData.length && (
                         <Empty className="min-h-[360px] border-0">
                           <EmptyHeader>
-                            <EmptyMedia variant="icon">{status === 'analyzing' ? <LoaderCircle className="animate-spin" /> : <ScanSearch />}</EmptyMedia>
-                            <EmptyTitle>{status === 'analyzing' ? 'PDF를 읽고 있습니다' : '표시할 문항이 없습니다'}</EmptyTitle>
-                            <EmptyDescription>{status === 'analyzing' ? `전체 페이지의 텍스트와 문항 번호를 확인하는 중입니다. ${analysisProgress}%` : '오류 내용을 확인한 뒤 다른 PDF를 선택해 주세요.'}</EmptyDescription>
+                            <EmptyMedia variant="icon"><ScanSearch /></EmptyMedia>
+                            <EmptyTitle>표시할 문항이 없습니다</EmptyTitle>
+                            <EmptyDescription>오류 내용을 확인한 뒤 다른 PDF를 선택해 주세요.</EmptyDescription>
                           </EmptyHeader>
                         </Empty>
                       )}
@@ -458,7 +446,7 @@ export default function Home() {
                           <span className={`grid size-11 place-items-center rounded-2xl text-lg font-extrabold ${selected === index ? 'bg-primary text-white' : 'bg-muted text-foreground'}`}>{String(question.number).padStart(2, '0')}</span>
                           <span className="min-w-0">
                             <span className="flex flex-wrap items-center gap-2"><span className="text-xs font-medium text-muted-foreground">{question.type}</span><Badge variant="outline" className="h-5 border-primary/15 bg-primary/5 text-primary">{question.domain}</Badge>{question.visionEnhanced && <Badge variant="secondary" className="h-5 bg-emerald-50 text-emerald-700">수식·그림 인식</Badge>}</span>
-                            <span className="mt-2 line-clamp-2 block text-[15px] font-medium leading-6">{question.text}</span>
+                            <span className="mt-2 line-clamp-2 block text-[15px] font-medium leading-6"><Suspense fallback={normalizeQuestionText(question.text)}><MathText text={question.text} compact /></Suspense></span>
                           </span>
                           <span className="col-start-2 flex items-center gap-2 self-center sm:col-start-auto">
                             <span className={`size-2 rounded-full ${question.confidence >= 85 ? 'bg-emerald-500' : 'bg-amber-400'}`} />
@@ -471,7 +459,7 @@ export default function Home() {
                     <div className="border-t bg-muted/35 px-4 py-3 text-center text-xs text-muted-foreground">문항 텍스트와 추천 성취기준은 내보내기 전에 직접 수정할 수 있습니다</div>
                   </div>
 
-                  {questionData[selected] && <QuestionInspector question={questionData[selected]} catalog={standards} canMerge={selected > 0} recognizing={recognizingQuestion === questionData[selected].number} canEditCapture={status !== 'analyzing' && recognizingQuestion === null && sourcePages.length > 0} onEditCapture={() => setEditingCapture(selected)} onTextChange={updateSelectedText} onStandardChange={updateSelectedStandard} onSubjectChange={updateSelectedSubject} onRefresh={refreshSelectedCandidates} onRecognize={() => void recognizeSelectedQuestion()} onSplit={splitSelectedQuestion} onMerge={mergeWithPrevious} />}
+                  {questionData[selected] && <QuestionInspector key={`${fileName}-${selected}`} question={questionData[selected]} catalog={standards} canMerge={selected > 0} recognizing={recognizingQuestion === questionData[selected].number} canEditCapture={!busy && sourcePages.length > 0} onEditCapture={() => setEditingCapture(selected)} onTextChange={updateSelectedText} onStandardChange={updateSelectedStandard} onSubjectChange={updateSelectedSubject} onRefresh={refreshSelectedCandidates} onRecognize={() => void recognizeSelectedQuestion()} onSplit={splitSelectedQuestion} onMerge={mergeWithPrevious} />}
                 </div>
               </TabsContent>
 
@@ -487,11 +475,12 @@ export default function Home() {
                   ))}
                 </div>
               </TabsContent>
-            </Tabs>
+            </Tabs>}
           </div>
         </div>
       </section>
-      <ExportDialog open={exportOpen} onOpenChange={setExportOpen} fileName={fileName} questions={questionData} />
+      {exportOpen && <ExportDialog fileName={fileName} questions={questionData} onClose={() => setExportOpen(false)} />}
+      {bankOpen && <QuestionBank onClose={() => setBankOpen(false)} />}
       {editingCapture !== null && questionData[editingCapture] && <CaptureEditor key={editingCapture} question={questionData[editingCapture]} sourcePages={sourcePages} onClose={() => setEditingCapture(null)} onSave={saveCaptureEdits} />}
       <footer className="mx-auto flex max-w-[1540px] flex-col gap-2 px-6 pb-8 text-xs leading-5 text-muted-foreground sm:flex-row sm:justify-between">
         <span>성취기준 데이터: worksheet-grab · 2022 개정 교육과정</span>
@@ -534,13 +523,15 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canEditCa
     });
   }
   return (
-    <aside className="overflow-hidden rounded-2xl border bg-background">
-      <div className="inspector-head p-5 text-white">
-        <div className="flex items-center justify-between"><p className="text-xs font-semibold uppercase tracking-[0.12em] text-white/60">문항별 추천 결과</p><Badge className="bg-white/12 text-white">후보 {standardCandidates.length}개</Badge></div>
+    <aside className="question-inspector overflow-hidden rounded-2xl border bg-background" aria-label={`${question.number}번 문항 정보`}>
+      <div className="inspector-head shrink-0 p-5 text-white">
+        <div className="flex items-center justify-between"><p className="text-sm font-semibold text-white/80">{question.number}번 문항 정보</p><Badge className="bg-white/12 text-white">후보 {standardCandidates.length}개</Badge></div>
         <p className="mt-5 font-mono text-2xl font-bold tracking-tight text-accent">{question.standardCode}</p>
         <p className="mt-2 text-lg font-bold">{question.domain}</p>
       </div>
-      <div className="p-5">
+      {/* The scrollable region needs a tab stop for keyboard-only scrolling. */}
+      {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
+      <section className="question-inspector-body p-5" tabIndex={0} aria-label={`${question.number}번 문항 상세 내용 · 스크롤 가능`}>
         {question.examSubject && <p className="mb-3 rounded-lg bg-primary/5 px-3 py-2 text-sm text-primary">{question.examSubject.page}쪽 머리말에서 ‘{question.examSubject.label}’ 감지 · {question.selectedSubjectKey ? '직접 선택한 교과를 우선 반영' : '관련 교과 안에서 성취기준 추천'}</p>}
         {question.captureWarning && <output className="mb-3 block rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{question.captureWarning}</output>}
         <div className="mb-3 flex flex-wrap items-center gap-2"><Button variant="outline" disabled={!canEditCapture} onClick={onEditCapture}>캡처 범위 수정</Button>{question.captureReviewed && <Badge className="bg-emerald-100 text-emerald-800">범위 확인 완료</Badge>}</div>
@@ -557,7 +548,9 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canEditCa
           <Button variant="outline" size="sm" onClick={() => insertLatex('$x^{2}$')}>제곱</Button>
           <Button variant="outline" size="sm" onClick={() => insertLatex('$\\sqrt{x}$')}>루트</Button>
           <Button variant="outline" size="sm" onClick={() => insertLatex('$60\\,\\mathrm{km/h}$')}>단위</Button>
+          <Button variant="outline" size="sm" disabled={recognizing || normalizeQuestionText(question.text) === question.text} onClick={() => onTextChange(normalizeQuestionText(question.text))}>텍스트 표기 정리</Button>
         </div>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">일반 문장은 평문으로, 실제 수식만 $…$로 입력하세요. ‘텍스트 표기 정리’는 불필요한 text 표기와 깨진 탭을 정리하며 API를 사용하지 않습니다.</p>
         <div className="mt-3 rounded-xl border bg-muted/35 p-3">
           <div className="mb-2 flex items-center justify-between gap-2">
             <p className="text-xs font-semibold text-muted-foreground">수식 미리보기</p>
@@ -601,62 +594,11 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canEditCa
         </div>
         <p className="mt-4 rounded-xl border border-primary/10 bg-primary/5 p-4 text-sm leading-6 text-foreground/80">{question.standard}</p>
         <Button variant="outline" className="mt-3 w-full" onClick={onRefresh}>수정한 문장으로 후보 다시 찾기 <ScanSearch /></Button>
-      </div>
+      </section>
     </aside>
   );
 }
 
-function ExportDialog({ open, onOpenChange, fileName, questions }: { open: boolean; onOpenChange: (open: boolean) => void; fileName: string; questions: AnalyzedQuestion[] }) {
-  const [exporting, setExporting] = useState(false);
-  const [exportError, setExportError] = useState('');
-  useEffect(() => {
-    if (!open) return;
-    setExportError('');
-    const close = (event: KeyboardEvent) => event.key === 'Escape' && onOpenChange(false);
-    window.addEventListener('keydown', close);
-    return () => window.removeEventListener('keydown', close);
-  }, [open, onOpenChange]);
-  async function handleHwpxExport() {
-    setExporting(true);
-    setExportError('');
-    try {
-      await downloadHwpx(fileName, questions);
-      onOpenChange(false);
-    } catch (reason) {
-      setExportError(reason instanceof Error ? reason.message : 'HWPX 생성에 실패했습니다.');
-    } finally {
-      setExporting(false);
-    }
-  }
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/20 p-4 backdrop-blur-sm" onMouseDown={() => onOpenChange(false)}>
-      <section role="dialog" aria-modal="true" aria-labelledby="export-title" className="w-full max-w-lg rounded-2xl bg-popover p-5 shadow-2xl ring-1 ring-foreground/10" onMouseDown={(event) => event.stopPropagation()}>
-        <div>
-          <h2 id="export-title" className="text-lg font-bold">문서 형식을 선택하세요</h2>
-          <p className="mt-2 text-sm text-muted-foreground">문항, 추천 성취기준, 분류 영역이 하나의 편집 가능한 문서로 저장됩니다.</p>
-        </div>
-        <div className="grid gap-3 py-2 sm:grid-cols-2">
-          <button onClick={() => { downloadDocx(fileName, questions); onOpenChange(false); }} className="group rounded-2xl border p-4 text-left transition hover:border-primary hover:bg-primary/5">
-            <span className="grid size-10 place-items-center rounded-xl bg-blue-50 text-blue-700"><FileDown className="size-5" /></span>
-            <strong className="mt-4 block">Word 문서</strong>
-            <span className="mt-1 block text-xs leading-5 text-muted-foreground">DOCX · 문항별 문서화</span>
-          </button>
-          <button disabled={exporting} onClick={() => void handleHwpxExport()} className="group rounded-2xl border p-4 text-left transition hover:border-primary hover:bg-primary/5 disabled:opacity-60">
-            <span className="grid size-10 place-items-center rounded-xl bg-emerald-50 text-emerald-700"><FileDown className="size-5" /></span>
-            <div className="mt-4 flex items-center gap-2"><strong>한글 문서</strong><Badge variant="secondary" className="text-[10px]">검증 템플릿</Badge></div>
-            <span className="mt-1 block text-xs leading-5 text-muted-foreground">{exporting ? 'HWPX 조립 중…' : 'HWPX · 한글 2020 이상'}</span>
-          </button>
-        </div>
-        {exportError && <p role="alert" className="pb-2 text-xs font-medium text-destructive">{exportError}</p>}
-        <div className="-mx-5 -mb-5 mt-2 flex items-center gap-2 rounded-b-2xl border-t bg-muted/50 p-4">
-          <p className="mr-auto self-center text-xs text-muted-foreground">총 {questions.length}개 문항</p>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>취소</Button>
-        </div>
-      </section>
-    </div>
-  );
-}
 
 function average(items: AnalyzedQuestion[]) {
   if (!items.length) return 0;

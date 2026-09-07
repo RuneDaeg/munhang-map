@@ -1,6 +1,7 @@
 import type { AnalyzedQuestion } from './pdf-analysis';
 import { cropPage } from './question-capture';
 import { validCaptureBox } from './capture-editor';
+import { normalizeQuestionText } from './math-normalization';
 
 const format = 'munhang-map-review';
 
@@ -8,7 +9,7 @@ export function serializeReview(fileName: string, questions: AnalyzedQuestion[],
   return JSON.stringify({
     format, version: 1, fileName, sourcePages,
     questions: questions.map((question) => ({
-      number: question.number, type: question.type, text: question.text,
+      number: question.number, type: question.type, text: normalizeQuestionText(question.text),
       standardCode: question.standardCode, standard: question.standard, domain: question.domain, confidence: question.confidence,
       examSubject: question.examSubject, selectedSubjectKey: question.selectedSubjectKey,
       captureReviewed: question.captureReviewed, captureWarning: question.captureWarning, visionEnhanced: question.visionEnhanced,
@@ -30,7 +31,7 @@ export async function parseReview(content: string) {
     const captures = [];
     for (const region of item.regions) captures.push({ page: region.page, box: region.box, image: await cropPage(sourcePages[region.page - 1], region.box) });
     questions.push({
-      number: item.number, type: item.type, text: item.text,
+      number: item.number, type: item.type, text: normalizeQuestionText(item.text),
       standardCode: item.standardCode, standard: item.standard, domain: item.domain, confidence: item.confidence,
       selectedSubjectKey: typeof item.selectedSubjectKey === 'string' ? item.selectedSubjectKey : undefined,
       examSubject: subject ? { label: subject.label, headerText: subject.headerText, page: subject.page, subjectKeys: subject.subjectKeys } : undefined,
