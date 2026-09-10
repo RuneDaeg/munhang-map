@@ -1,6 +1,7 @@
 'use client';
 
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { splitFormattedText } from '@/lib/text-formatting';
 import {
   ArrowRight,
   Check,
@@ -33,7 +34,7 @@ import {
   NativeSelectOption,
 } from '@/components/ui/native-select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Textarea } from '@/components/ui/textarea';
+import QuestionTextEditor, { type QuestionEditorHandle } from '@/components/question-text-editor';
 import {
   classifyQuestion,
   loadAchievementStandards,
@@ -45,11 +46,14 @@ import { CaptureEditor } from '@/components/capture-editor';
 import { downloadReview, parseReview } from '@/lib/review-file';
 import type { QuestionCapture } from '@/lib/question-capture';
 import { normalizeQuestionText } from '@/lib/math-normalization';
+import { questionStructures } from '@/lib/question-content';
+import { countUnresolvedGlyphs, glyphWarning } from '@/lib/pdf-text';
 import { runExamAnalysis, type AnalysisProgress as ProgressState } from '@/lib/analysis-workflow';
 import { AnalysisProgress } from '@/components/analysis-progress';
 import { ExportDialog } from '@/components/export-dialog';
 import { QuestionBank } from '@/components/question-bank';
 import { saveToQuestionBank } from '@/lib/question-bank';
+import { version } from '@/package.json';
 
 const MathText = lazy(() => import('@/components/math-text'));
 
@@ -204,7 +208,7 @@ export default function Home() {
   }
 
   function updateSelectedText(text: string) {
-    setQuestionData((current) => current.map((question, index) => index === selected ? { ...question, text, visionEnhanced: false } : question));
+    setQuestionData((current) => current.map((question, index) => index === selected ? { ...question, text, textEdited:true, visionEnhanced: false } : question));
   }
 
   async function handleReviewFile(file: File) {
@@ -227,7 +231,7 @@ export default function Home() {
   }
 
   function saveCaptureEdits(captures: QuestionCapture[]) {
-    setQuestionData((questions) => questions.map((question, index) => index === editingCapture ? { ...question, questionCaptures: captures, type: question.type.replace(/\d+쪽/, `${captures[0].page}쪽`), sourcePageImage: sourcePages[captures[0].page - 1], captureReviewed: true, captureWarning: undefined, visionEnhanced: false } : question));
+    setQuestionData((questions) => questions.map((question, index) => index === editingCapture ? { ...question, questionCaptures: captures, type: question.type.replace(/\d+쪽/, `${captures[0].page}쪽`), sourcePageImage: sourcePages[captures[0].page - 1], captureReviewed: true, captureWarning: undefined, visualChoices:undefined, analysisWarning:question.visualChoices?.length?'캡처 범위를 변경했습니다. 그림 선택지는 수정된 문항 전체 캡처를 기준으로 확인하세요.':question.analysisWarning, visionEnhanced: false } : question));
     setEditingCapture(null);
   }
 
@@ -255,6 +259,8 @@ export default function Home() {
   async function recognizeSelectedQuestion() {
     const question = questionData[selected];
     if (!question?.sourcePageImage || recognizingQuestion !== null) return;
+    if(question.textEdited && !window.confirm('직접 편집한 내용이 있습니다. 현재 검토 파일을 저장한 후 다시 판독하는 것을 권장합니다. 현재 텍스트를 다시 판독한 결과로 바꿀까요?')) return;
+    const targetIndex=selected;
     setRecognizingQuestion(question.number);
     setVisionError('');
     try {
@@ -263,10 +269,11 @@ export default function Home() {
       if (!status.available) throw new Error(status.desktop || status.local ? '먼저 API 연결을 설정해 주세요.' : '로컬 .env.local에 OPENAI_API_KEY를 설정한 뒤 개발 서버를 다시 시작해 주세요.');
       const result = await enhanceQuestionsWithVision([question]);
       if (result.failures.length) throw new Error(result.failures[0]);
+      if (result.warnings.length) setVisionError(result.warnings.join(' '));
       const catalog = standards.length ? standards : await loadAchievementStandards();
       setStandards(catalog);
       const enhanced = classifyQuestion(result.questions[0], catalog);
-      setQuestionData((current) => current.map((item, index) => index === selected ? enhanced : item));
+      setQuestionData((current) => current.map((item, index) => index === targetIndex && item===question ? {...enhanced,textEdited:enhanced.text===question.text ? question.textEdited : false} : item));
       void getVisionStatus().then(applyVisionStatus).catch(() => undefined);
     } catch (reason) {
       setVisionError(reason instanceof Error ? reason.message : '자동 인식을 완료하지 못했습니다.');
@@ -278,14 +285,15 @@ export default function Home() {
   function splitSelectedQuestion(position: number) {
     const question = questionData[selected];
     if (!question || position < 8 || position > question.text.length - 8) return;
-    const firstText = question.text.slice(0, position).trim();
-    let secondText = question.text.slice(position).trim();
+    const [left,right] = splitFormattedText(question.text,position);
+    const firstText = left.trim();
+    let secondText = right.trim();
     const marker = secondText.match(/^(\d{1,2})\s*[.)]\s*/);
     const secondNumber = marker ? Number(marker[1]) : question.number + 1;
     if (marker) secondText = secondText.slice(marker[0].length).trim();
     const captureWarning = '텍스트를 수동으로 나눴습니다. 캡처에는 분리 전 영역이 보존되어 있으므로 범위를 확인해 주세요.';
-    const first = classifyQuestion({ ...question, text: firstText, captureWarning, captureReviewed: false, figureImage: undefined, visionEnhanced: false }, standards);
-    const second = classifyQuestion({ ...question, number: secondNumber, text: secondText, captureWarning, captureReviewed: false, figureImage: undefined, visionEnhanced: false, type: question.type.replace('자동 추출', '수동 분리') }, standards);
+    const first = classifyQuestion({ ...question, text: firstText, captureWarning, captureReviewed: false, textEdited:true, visualChoices:undefined, analysisWarning:undefined, figureImage: undefined, visionEnhanced: false }, standards);
+    const second = classifyQuestion({ ...question, number: secondNumber, text: secondText, captureWarning, captureReviewed: false, textEdited:true, visualChoices:undefined, analysisWarning:undefined, figureImage: undefined, visionEnhanced: false, type: question.type.replace('자동 추출', '수동 분리') }, standards);
     setQuestionData((current) => [...current.slice(0, selected), first, second, ...current.slice(selected + 1)]);
     setSelected(selected + 1);
   }
@@ -295,7 +303,7 @@ export default function Home() {
     const previous = questionData[selected - 1];
     const current = questionData[selected];
     const questionCaptures = [...(previous.questionCaptures ?? []), ...(current.questionCaptures ?? [])].filter((capture, index, all) => all.findIndex((item) => item.image === capture.image) === index);
-    const merged = classifyQuestion({ ...previous, text: `${previous.text}\n${current.number}. ${current.text}`, questionCaptures, captureReviewed: false, captureWarning: previous.captureWarning ?? current.captureWarning, figureImage: undefined, visionEnhanced: false, type: previous.type.replace('자동 추출', '수동 병합') }, standards);
+    const merged = classifyQuestion({ ...previous, text: `${previous.text}\n${current.number}. ${current.text}`, questionCaptures, captureReviewed: false, captureWarning: previous.captureWarning ?? current.captureWarning, textEdited:true, visualChoices:undefined, analysisWarning:undefined, figureImage: undefined, visionEnhanced: false, type: previous.type.replace('자동 추출', '수동 병합') }, standards);
     setQuestionData((items) => [...items.slice(0, selected - 1), merged, ...items.slice(selected + 1)]);
     setSelected(selected - 1);
   }
@@ -313,6 +321,7 @@ export default function Home() {
           </button>
           <div className="flex items-baseline gap-2">
             <span className="text-lg font-extrabold tracking-[-0.04em]">문항맵</span>
+            <span className="text-xs text-muted-foreground" aria-label={`앱 버전 ${version}`}>v{version}</span>
             <span className="hidden text-xs text-muted-foreground sm:inline">성취기준 분류 작업실</span>
           </div>
         </div>
@@ -445,12 +454,12 @@ export default function Home() {
                         <button key={`${question.number}-${index}`} onClick={() => setSelected(index)} className={`group grid w-full grid-cols-[48px_minmax(0,1fr)] gap-3 p-4 text-left transition sm:grid-cols-[54px_minmax(0,1fr)_auto] ${selected === index ? 'bg-selected' : 'hover:bg-muted/50'}`}>
                           <span className={`grid size-11 place-items-center rounded-2xl text-lg font-extrabold ${selected === index ? 'bg-primary text-white' : 'bg-muted text-foreground'}`}>{String(question.number).padStart(2, '0')}</span>
                           <span className="min-w-0">
-                            <span className="flex flex-wrap items-center gap-2"><span className="text-xs font-medium text-muted-foreground">{question.type}</span><Badge variant="outline" className="h-5 border-primary/15 bg-primary/5 text-primary">{question.domain}</Badge>{question.visionEnhanced && <Badge variant="secondary" className="h-5 bg-emerald-50 text-emerald-700">수식·그림 인식</Badge>}</span>
+                            <span className="flex flex-wrap items-center gap-2"><span className="text-xs font-medium text-muted-foreground">{question.type}</span><Badge variant="outline" className="h-5 border-primary/15 bg-primary/5 text-primary">{question.domain}</Badge>{countUnresolvedGlyphs(question.text) ? <Badge variant="secondary" className="h-5 bg-amber-100 text-amber-900">문자 복원 확인 필요</Badge> : question.visionEnhanced && <Badge variant="secondary" className="h-5 bg-emerald-50 text-emerald-700">수식·그림 인식</Badge>}</span>
                             <span className="mt-2 line-clamp-2 block text-[15px] font-medium leading-6"><Suspense fallback={normalizeQuestionText(question.text)}><MathText text={question.text} compact /></Suspense></span>
                           </span>
                           <span className="col-start-2 flex items-center gap-2 self-center sm:col-start-auto">
                             <span className={`size-2 rounded-full ${question.confidence >= 85 ? 'bg-emerald-500' : 'bg-amber-400'}`} />
-                            <span className="text-xs font-semibold tabular-nums text-muted-foreground">{question.confidence}%</span>
+                            <span title="성취기준 일치율 · 문자 인식 정확도가 아닙니다" className="text-xs font-semibold tabular-nums text-muted-foreground">{question.confidence}%</span>
                             <ArrowRight className="size-4 text-muted-foreground transition group-hover:translate-x-0.5" />
                           </span>
                         </button>
@@ -483,6 +492,7 @@ export default function Home() {
       {bankOpen && <QuestionBank onClose={() => setBankOpen(false)} />}
       {editingCapture !== null && questionData[editingCapture] && <CaptureEditor key={editingCapture} question={questionData[editingCapture]} sourcePages={sourcePages} onClose={() => setEditingCapture(null)} onSave={saveCaptureEdits} />}
       <footer className="mx-auto flex max-w-[1540px] flex-col gap-2 px-6 pb-8 text-xs leading-5 text-muted-foreground sm:flex-row sm:justify-between">
+        <span className="text-sm font-medium">제작자: 여광재(온양고등학교)<br />무단 전제 및 복제 금지</span>
         <span>성취기준 데이터: worksheet-grab · 2022 개정 교육과정</span>
         <span className="flex flex-wrap gap-x-4"><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/pblsketch/worksheet-grab/tree/090e24e331f779a2e329cf686c5c5444f9221ca9/data" target="_blank" rel="noreferrer">데이터 출처</a><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/jkf87/hwpx-skill" target="_blank" rel="noreferrer">HWPX 구현 참고</a><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/KaTeX/KaTeX" target="_blank" rel="noreferrer">KaTeX</a></span>
       </footer>
@@ -505,9 +515,12 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canEditCa
   onSplit: (position: number) => void;
   onMerge: () => void;
 }) {
-  const textRef = useRef<HTMLTextAreaElement>(null);
+  const textRef = useRef<QuestionEditorHandle>(null);
   const [cursor, setCursor] = useState(0);
   const [showAllSubjects, setShowAllSubjects] = useState(false);
+  const contentBlocks = useMemo(() => questionStructures(question.text), [question.text]);
+  const boxCount = contentBlocks.filter((block) => block.kind === 'box').length;
+  const tableCount = contentBlocks.filter((block) => block.kind === 'table').length;
   const allSubjects = useMemo(() => [...new Map(catalog.map((item) => [`${item.school}|${item.subject}`, `${item.school} · ${item.subject}`])).entries()], [catalog]);
   const subjectCandidates = question.subjectCandidates ?? [{ key: question.domain.replace(' · ', '|'), label: question.domain, confidence: question.confidence }];
   const standardCandidates = question.standardCandidates ?? [{ code: question.standardCode, standard: question.standard, domain: question.domain, confidence: question.confidence }];
@@ -534,6 +547,8 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canEditCa
       <section className="question-inspector-body p-5" tabIndex={0} aria-label={`${question.number}번 문항 상세 내용 · 스크롤 가능`}>
         {question.examSubject && <p className="mb-3 rounded-lg bg-primary/5 px-3 py-2 text-sm text-primary">{question.examSubject.page}쪽 머리말에서 ‘{question.examSubject.label}’ 감지 · {question.selectedSubjectKey ? '직접 선택한 교과를 우선 반영' : '관련 교과 안에서 성취기준 추천'}</p>}
         {question.captureWarning && <output className="mb-3 block rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{question.captureWarning}</output>}
+        {question.analysisWarning && <output className="mb-3 block rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{question.analysisWarning}</output>}
+        {glyphWarning(question.text) && <output className="mb-3 block rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{glyphWarning(question.text)}</output>}
         <div className="mb-3 flex flex-wrap items-center gap-2"><Button variant="outline" disabled={!canEditCapture} onClick={onEditCapture}>캡처 범위 수정</Button>{question.captureReviewed && <Badge className="bg-emerald-100 text-emerald-800">범위 확인 완료</Badge>}</div>
         {question.questionCaptures?.map((capture, index) => (
           <figure key={`${capture.page}-${index}`} className="mb-4 overflow-hidden rounded-xl border">
@@ -541,7 +556,20 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canEditCa
             <img src={capture.image} alt={`${question.number}번 문항의 발문, 그림자료, 선택지를 포함한 원문 캡처 ${index + 1}`} className="h-auto w-full bg-white object-contain" />
           </figure>
         ))}
-        <Textarea ref={textRef} aria-label="문항 텍스트" value={question.text} onChange={(event) => onTextChange(event.target.value)} onSelect={(event) => setCursor(event.currentTarget.selectionStart)} className="min-h-40 resize-y border-0 bg-transparent p-0 text-sm leading-6 shadow-none focus-visible:ring-0" />
+        <div className="mb-5 rounded-xl border bg-muted/35 p-3">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-muted-foreground">문항 미리보기 · 수식·표·보기</p>
+            <Badge variant="secondary">{boxCount || tableCount ? `상자 ${boxCount}개 · 표 ${tableCount}개` : '상자·표 구조 없음'}</Badge>
+          </div>
+          {contentBlocks.some((block) => block.kind === 'box' && block.inferred) && <p className="mb-2 text-xs text-muted-foreground">보기 제목과 항목·선택지 구분을 바탕으로 상자를 묶었습니다. 원문과 비교해 주세요.</p>}
+          <Suspense fallback={<p className="text-sm text-muted-foreground">문항 미리보기를 불러오는 중…</p>}><MathText text={question.text} /></Suspense>
+          {question.visualChoices?.length ? <div className="mt-4 space-y-3" aria-label="원본 그림 선택지">
+            <p className="text-sm font-semibold">그림 선택지 · 원본 모양 보존</p>
+            {question.visualChoices.map((choice,index)=><figure key={`${choice.page}-${choice.label}-${index}`} className="border bg-white p-2"><figcaption className="text-sm text-muted-foreground">{choice.label} 원본 선택지 · 문서에 첨부됨</figcaption><img src={choice.image} alt={`${choice.label} 선택지의 칸 배치와 숫자·수식을 보존한 원본`} className="h-auto max-w-full" /></figure>)}
+          </div>:null}
+        </div>
+        <p className="mb-2 text-sm font-semibold text-muted-foreground">텍스트 편집 · 상자·표 표식은 위 미리보기에 적용됩니다</p>
+        <QuestionTextEditor ref={textRef} value={question.text} onChange={onTextChange} onCursor={setCursor} />
         <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <span className="mr-1 text-xs font-semibold text-muted-foreground">LaTeX 삽입</span>
           <Button variant="outline" size="sm" onClick={() => insertLatex('$\\frac{a}{b}$')}>분수</Button>
@@ -551,13 +579,12 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canEditCa
           <Button variant="outline" size="sm" disabled={recognizing || normalizeQuestionText(question.text) === question.text} onClick={() => onTextChange(normalizeQuestionText(question.text))}>텍스트 표기 정리</Button>
         </div>
         <p className="mt-2 text-xs leading-5 text-muted-foreground">일반 문장은 평문으로, 실제 수식만 $…$로 입력하세요. ‘텍스트 표기 정리’는 불필요한 text 표기와 깨진 탭을 정리하며 API를 사용하지 않습니다.</p>
-        <div className="mt-3 rounded-xl border bg-muted/35 p-3">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <p className="text-xs font-semibold text-muted-foreground">수식 미리보기</p>
-            {question.visionEnhanced && <Badge variant="secondary" className="bg-emerald-50 text-emerald-700">자동 인식 완료</Badge>}
-          </div>
-          <Suspense fallback={<p className="text-sm text-muted-foreground">수식 렌더러를 불러오는 중…</p>}><MathText text={question.text} /></Suspense>
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          <Button variant="outline" size="sm" onClick={() => insertLatex('\n:::box 자료\n자료 내용을 입력하세요.\n:::\n')}>자료 상자 삽입</Button>
+          <Button variant="outline" size="sm" onClick={() => insertLatex('\n:::box <보기>\nㄱ. 보기 내용\nㄴ. 보기 내용\n:::\n')}>보기 상자 삽입</Button>
+          <Button variant="outline" size="sm" onClick={() => insertLatex('\n:::table\n| 구분 | 값 |\n| --- | --- |\n| A | 10 |\n| B | 20 |\n:::\n')}>자료표 삽입</Button>
         </div>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">AI의 구조 정보로 자료 상자·보기를 한 칸 표로, 행·열 자료를 여러 칸 표로 만듭니다. 표식이 없어도 명확한 보기 목록은 자동으로 묶습니다. 위 미리보기에서 원문과 비교하세요. 편집칸의 :::는 상자 경계, |는 셀 구분이며 문서에는 실제 표로 저장됩니다.</p>
         <Button variant="outline" className="mt-3 w-full" disabled={recognizing || !question.sourcePageImage} onClick={onRecognize}>
           {recognizing ? <LoaderCircle className="animate-spin" /> : <Sparkles />} {recognizing ? '발문·수식 판독 중…' : '문항 전체에서 발문·수식 다시 판독'}
         </Button>

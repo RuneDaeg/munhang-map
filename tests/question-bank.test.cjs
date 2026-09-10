@@ -46,6 +46,31 @@ test('bad IDs, remote images, out-of-page boxes and duplicate selections cannot 
   assert.throws(() => bank.select([id, id]), /중복 없이/);
 });
 
+test('bold and underline persist through disk restart and review serialization', (t) => {
+  const root=fixture(t),text='<b>발문 <u>중요한 조건</u></b>\n:::box <보기>\nㄱ. <u>조건</u>을 확인한다.\n:::';
+  const bank=createQuestionBank(root);
+  bank.save(input('format.pdf',[{...question,text}]));
+  const reopened=createQuestionBank(root),restored=reopened.select(reopened.list().map(item=>item.id));
+  assert.equal(restored[0].text,text);
+  const {serializeReview}=require('../lib/review-file.ts');
+  assert.equal(JSON.parse(serializeReview('format.pdf',restored,[])).questions[0].text,text);
+});
+
+test('visual choice crops and manual-edit flags survive disk restart and review whitelisting', (t)=>{
+  const root=fixture(t),bank=createQuestionBank(root);
+  const visualChoices=[{label:'①',page:1,box:[.1,.2,.3,.1],image,apiKey:'must-not-save'}];
+  bank.save(input('visual.pdf',[{...question,visualChoices,textEdited:true,analysisWarning:'원본 그림 확인'}]));
+  const reopened=createQuestionBank(root),restored=reopened.select(reopened.list().map(i=>i.id))[0];
+  assert.deepEqual(restored.visualChoices,[{label:'①',page:1,box:[.1,.2,.3,.1],image}]);
+  assert.equal(restored.textEdited,true);assert.equal(restored.analysisWarning,'원본 그림 확인');
+  const {serializeReview}=require('../lib/review-file.ts');
+  const encoded=serializeReview('visual.pdf',[restored],[image]);
+  assert.ok(!encoded.includes('must-not-save'));
+  assert.deepEqual(JSON.parse(encoded).questions[0].visualChoices,[{label:'①',page:1,box:[.1,.2,.3,.1]}]);
+  assert.throws(()=>bank.save(input('bad.pdf',[{...question,visualChoices:[{...visualChoices[0],image:'https://example.com/x.jpg'}]}])),/이미지/);
+  assert.throws(()=>bank.save(input('bad.pdf',[{...question,visualChoices:[{...visualChoices[0],box:[.9,0,.4,.1]}]}])),/범위/);
+});
+
 test('failed atomic replacement keeps the previous saved version and its index together', (t) => {
   const root = fixture(t);
   const bank = createQuestionBank(root);

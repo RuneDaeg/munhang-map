@@ -33,7 +33,7 @@ test('two columns keep both stems, figure space, choices and the next question s
   assert.match(questions[0].text, /⑤ 유리/);
   assert.doesNotMatch(questions[0].text, /판의 경계|구간 단속/);
   const [x, y, width, height] = questions[0].regions[0].box;
-  assert.ok(x + width < 0.5 && y * 800 <= 100 && (y + height) * 800 >= 302 && (y + height) * 800 < 340);
+  assert.ok(x + width <= 0.5 && y * 800 <= 100 && (y + height) * 800 >= 302 && (y + height) * 800 < 340);
   assert.equal(detectExamSubject(page.headerText, catalog, 1).label, '통합과학');
 });
 
@@ -41,6 +41,30 @@ test('a long one-column question is not treated as two columns', () => {
   const page = layoutPage([line('1. 설명이다.', 30, 100, 500), line('같은 줄이 페이지 중앙을 넘어간다.', 30, 180, 500), line('2. 두 번째 문항', 30, 400, 500)], 600, 800, 1);
   assert.equal(page.columns.length, 1);
   assert.equal(locateQuestions([page])[0].regions[0].box[2], 0.95);
+});
+
+test('gutter measurement includes short questions near the top of a page', () => {
+  const items = [line('13. 왼쪽 문항', 80, 171, 260), line('14. 오른쪽 문항', 430, 171, 300)];
+  items.push({ ...line('수학', 353, 125, 67), height: 36 });
+  for (let i = 0; i < 16; i++) {
+    items.push(line('왼쪽 본문', 90, 190 + i * 15, 260));
+    // The right question is short: all its prose is above the top fifth.
+    items.push(line('오른쪽 본문', 435 + (i % 4) * 65, 191 + Math.floor(i / 4) * 10, 50));
+  }
+  const page = layoutPage(items, 841, 1190, 5);
+  assert.equal(page.columns.length, 2);
+  assert.ok(page.columns[0].right > 350 && page.columns[1].left < 430);
+  assert.deepEqual(locateQuestions([page]).map(q => q.number), [13, 14]);
+});
+
+test('a formula above the question number is retained rather than replaced by the stem', () => {
+  const page = layoutPage([
+    line('6', 100, 90, 7), line('1. 수식의 값은?', 30, 108, 500),
+    line('① 1 ② 2 ③ 3 ④ 4 ⑤ 5', 30, 145, 500),
+  ], 600, 800, 1);
+  const question = locateQuestions([page])[0];
+  assert.match(question.text, /^6\n수식의 값은\?/);
+  assert.equal((question.text.match(/수식의 값은/g) || []).length, 1);
 });
 
 test('a stem beginning with a number is still a question, while decimal units are not', () => {

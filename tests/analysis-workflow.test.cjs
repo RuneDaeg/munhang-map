@@ -45,3 +45,14 @@ test('failed PDF or connection checks fail the workflow instead of claiming comp
   await assert.rejects(runExamAnalysis({}, () => {}, makeDeps({ analyzePdf: async () => { throw new Error('broken PDF'); } })), /broken PDF/);
   await assert.rejects(runExamAnalysis({}, () => {}, makeDeps({ getVisionStatus: async () => { throw new Error('connection check failed'); } })), /connection check failed/);
 });
+
+test('unresolved final characters need review; a successful OCR repair clears the stale PDF warning', async () => {
+  const broken={...original,text:'거리 \uE00B, 측정값 \uE039\uE038\uE053\uE03D cm'};
+  const pdf = async()=>({questions:[broken],sourcePages:[],pageCount:1,qualityWarning:'PDF 기본 추출에서 문자를 복원하지 못했습니다.'});
+  const states=[];
+  const partial=await runExamAnalysis({},state=>states.push(state),makeDeps({analyzePdf:pdf,getVisionStatus:async()=>({available:false})}));
+  assert.match(partial.qualityWarning,/1개 문항\(1번\).*복원하지 못/);
+  assert.equal(states.at(-1).detail,'일부 판독 결과 확인 필요');
+  const repaired=await runExamAnalysis({},()=>{},makeDeps({analyzePdf:pdf,enhanceQuestionsWithVision:async()=>({questions:[{...broken,text:'거리 L, 측정값 65.0 cm'}],failures:[]})}));
+  assert.equal(repaired.qualityWarning,'');
+});

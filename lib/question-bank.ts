@@ -22,7 +22,7 @@ export async function saveToQuestionBank(sourceFileName: string, questions: Anal
   const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sourcePages.join('')));
   const sourceFingerprint = [...new Uint8Array(bytes)].map((value) => value.toString(16).padStart(2, '0')).join('');
   // Whitelist the document content. Never send API settings or full source pages.
-  const snapshots = questions.map((question) => ({ number: question.number, type: question.type, text: normalizeQuestionText(question.text), standardCode: question.standardCode, standard: question.standard, domain: question.domain, confidence: question.confidence, questionCaptures: question.questionCaptures?.map(({ page, box, image }) => ({ page, box, image })), captureWarning: question.captureWarning, captureReviewed: question.captureReviewed, visionEnhanced: question.visionEnhanced }));
+  const snapshots = questions.map((question) => ({ number: question.number, type: question.type, text: normalizeQuestionText(question.text), standardCode: question.standardCode, standard: question.standard, domain: question.domain, confidence: question.confidence, questionCaptures: question.questionCaptures?.map(({ page, box, image }) => ({ page, box, image })), captureWarning: question.captureWarning, captureReviewed: question.captureReviewed, visionEnhanced: question.visionEnhanced, textEdited: question.textEdited, analysisWarning: question.analysisWarning, visualChoices: question.visualChoices?.map(({label,page,box,image})=>({label,page,box,image})) }));
   return bankRequest<{ saved: number; updated: boolean }>('', { sourceFileName, sourceFingerprint, questions: snapshots });
 }
 

@@ -1,5 +1,5 @@
 # dependencies
-/node_modules
+node_modules/
 /.pnp
 .pnp.*
 .yarn/*
@@ -48,5 +48,7 @@ next-env.d.ts
 question-bank/
 api-key.enc
 local-master-key.bin
-/settings.json
+settings.json
+ai-connection.bin
+openai-api-key.bin
 *.key

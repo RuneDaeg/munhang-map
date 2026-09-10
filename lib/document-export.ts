@@ -1,11 +1,14 @@
 import type { AnalyzedQuestion } from './pdf-analysis';
-import { normalizeQuestionText } from './math-normalization';
+import { questionPlainText } from './question-content';
+import { docxQuestionContent, hwpxQuestionContent, prepareHwpxTableStyles } from './table-export';
+import { prepareHwpxTextStyles } from './hwpx-text-styles';
+import { unformattedText } from './text-formatting';
 
 // HWPX packaging follows jkf87/hwpx-skill Workflow A and uses its MIT base
 // skeleton. Full attribution and pinned revisions are in THIRD_PARTY_NOTICES.md.
 
 type ZipEntry = { name: string; data: Uint8Array };
-type EmbeddedPageImage = { itemId: string; fileName: string; data: Uint8Array; width: number; height: number };
+type EmbeddedPageImage = { itemId: string; fileName: string; data: Uint8Array; width: number; height: number; label?: string };
 const encoder = new TextEncoder();
 
 export function groupQuestionsByStandard(questions: AnalyzedQuestion[]) {
@@ -58,10 +61,10 @@ export function createDocxBytes(title: string, questions: AnalyzedQuestion[]) {
   const body = questions.map((question, index) => `
     <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>${xml(`${question.number}번 문항`)}</w:t></w:r></w:p>
     ${question.sourceFileName ? `<w:p><w:r><w:t>${xml(`원본: ${question.sourceFileName} · ${question.number}번`)}</w:t></w:r></w:p>` : ''}
-    ${normalizeQuestionText(question.text).split(/\r?\n/).map((line) => `<w:p><w:r><w:t xml:space="preserve">${xml(line)}</w:t></w:r></w:p>`).join('')}
+    ${docxQuestionContent(question.text)}
     <w:p><w:pPr><w:pStyle w:val="Standard"/></w:pPr><w:r><w:t>${xml(`${question.standardCode} ${question.domain}`)}</w:t></w:r></w:p>
     <w:p><w:r><w:t>${xml(question.standard)}</w:t></w:r></w:p>
-    ${(images.byQuestion.get(index) ?? []).map((image, imageIndex) => `<w:p><w:r><w:rPr><w:b/><w:color w:val="64748B"/></w:rPr><w:t>${question.questionCaptures?.length ? '문항 전체 원문 캡처' : '문항 그림자료'}${question.captureWarning ? ' · 범위 확인 필요' : ''}</w:t></w:r></w:p>${docxImageParagraph(`rIdImage${image.itemId}`, index * 100 + imageIndex + 1, image)}`).join('')}`).join('');
+    ${(images.byQuestion.get(index) ?? []).map((image, imageIndex) => `<w:p><w:r><w:rPr><w:b/><w:color w:val="64748B"/></w:rPr><w:t>${image.label || (question.questionCaptures?.length ? '문항 전체 원문 캡처' : '문항 그림자료')}${question.captureWarning ? ' · 범위 확인 필요' : ''}</w:t></w:r></w:p>${docxImageParagraph(`rIdImage${image.itemId}`, index * 100 + imageIndex + 1, image)}`).join('')}`).join('');
   const sourceNotice = '<w:p><w:r><w:rPr><w:color w:val="64748B"/><w:sz w:val="18"/></w:rPr><w:t>성취기준 출처: pblsketch/worksheet-grab (2022 개정 교육과정)</w:t></w:r></w:p>';
   const imageRelationships = images.unique.map((image) => `<Relationship Id="rIdImage${image.itemId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${image.fileName}"/>`).join('');
   const entries: ZipEntry[] = [
@@ -108,15 +111,18 @@ export function createHwpxBytesFromTemplate(title: string, questions: AnalyzedQu
   const baseSection = decoder.decode(requiredTemplatePart(template, 'Contents/section0.xml'));
   const baseContent = decoder.decode(requiredTemplatePart(template, 'Contents/content.hpf'));
   const images = collectPageImages(questions);
-  const section = makeHwpxSection(baseSection, title, questions, images.byQuestion);
+  const textStyles = prepareHwpxTextStyles(decoder.decode(requiredTemplatePart(template, 'Contents/header.xml')));
+  const tableStyles = {...prepareHwpxTableStyles(textStyles.header),runs:textStyles.runs};
+  const section = makeHwpxSection(baseSection, title, questions, images.byQuestion, tableStyles);
   const imageManifest = images.unique.map((image) => `<opf:item id="${image.itemId}" href="BinData/${image.fileName}" media-type="image/jpeg" isEmbeded="1"/>`).join('');
   const content = baseContent
     .replace('<opf:title/>', `<opf:title>${xml(title)}</opf:title>`)
     .replace('name="creator" content="text"', 'name="creator" content="문항맵"')
     .replace('name="lastsaveby" content="text"', 'name="lastsaveby" content="문항맵"')
     .replace('</opf:manifest>', `${imageManifest}</opf:manifest>`);
-  const preview = [title, `문항 ${questions.length}개 · 성취기준별 자동 분류`, ...questions.flatMap((question) => [`${question.number}번 문항`, normalizeQuestionText(question.text), question.standardCode, question.standard, question.questionCaptures?.length ? '[문항 전체 원문 캡처 포함]' : question.figureImage ? '[문항 그림자료 포함]' : '']), '성취기준 출처: pblsketch/worksheet-grab'].join('\n');
+  const preview = [title, `문항 ${questions.length}개 · 성취기준별 자동 분류`, ...questions.flatMap((question) => [`${question.number}번 문항`, unformattedText(questionPlainText(question.text)), question.standardCode, question.standard, question.questionCaptures?.length ? '[문항 전체 원문 캡처 포함]' : question.figureImage ? '[문항 그림자료 포함]' : '']), '성취기준 출처: pblsketch/worksheet-grab'].join('\n');
   const replacements = new Map<string, Uint8Array>([
+    ['Contents/header.xml', encoder.encode(tableStyles.header)],
     ['Contents/section0.xml', encoder.encode(section)],
     ['Contents/content.hpf', encoder.encode(content)],
     ['Preview/PrvText.txt', encoder.encode(preview)],
@@ -127,24 +133,24 @@ export function createHwpxBytesFromTemplate(title: string, questions: AnalyzedQu
   ]);
 }
 
-function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestion[], images: Map<number, EmbeddedPageImage[]>) {
+function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestion[], images: Map<number, EmbeddedPageImage[]>, tableStyles: { border: number; headerBorder: number; runs:(text:string,base?:string)=>string }) {
   const open = base.match(/<hs:sec\b[^>]*>/)?.[0];
   const first = base.match(/<hp:p\b[\s\S]*?<\/hp:p>/)?.[0]
     ?.replace(/<hp:linesegarray>[\s\S]*?<\/hp:linesegarray>/g, '')
     .replace(/id="\d+"/, 'id="1"');
   if (!open || !first) throw new Error('HWPX 베이스 템플릿의 secPr/colPr를 찾지 못했습니다.');
   let id = 2;
-  const paragraph = (text: string, charPr = '0') => `<hp:p id="${id++}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="${charPr}"><hp:t>${xml(text)}</hp:t></hp:run></hp:p>`;
+  const paragraph = (text: string, charPr = '0') => `<hp:p id="${id++}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">${tableStyles.runs(text,charPr)}</hp:p>`;
   const parts = [first, paragraph(title, '5'), paragraph(`문항 ${questions.length}개 · 성취기준별 자동 분류`, '6'), paragraph('')];
   for (const [index, question] of questions.entries()) {
     parts.push(paragraph(`${question.number}번 문항`, '6'));
     if (question.sourceFileName) parts.push(paragraph(`원본: ${question.sourceFileName} · ${question.number}번`, '2'));
-    for (const line of normalizeQuestionText(question.text).split(/\r?\n/).filter(Boolean)) parts.push(paragraph(line));
+    parts.push(hwpxQuestionContent(question.text, { paragraph, nextId: () => id++, ...tableStyles }));
     parts.push(paragraph(`${question.standardCode}  ${question.domain}`, '6'));
     parts.push(paragraph(`- ${question.standard}`));
     for (const image of images.get(index) ?? []) {
-      parts.push(paragraph(`${question.questionCaptures?.length ? '문항 전체 원문 캡처' : '문항 그림자료'}${question.captureWarning ? ' · 범위 확인 필요' : ''}`, '2'));
-      parts.push(hwpxImageParagraph(id++, image, 10000 + id * 2, 10001 + id * 2));
+      parts.push(paragraph(`${image.label || (question.questionCaptures?.length ? '문항 전체 원문 캡처' : '문항 그림자료')}${question.captureWarning ? ' · 범위 확인 필요' : ''}`, '2'));
+      parts.push(hwpxImageParagraph(id++, image, id++, id++));
     }
     parts.push(paragraph(''));
   }
@@ -164,6 +170,7 @@ function collectPageImages(questions: AnalyzedQuestion[]) {
   const byQuestion = new Map<number, EmbeddedPageImage[]>();
   questions.forEach((question, index) => {
     const sources = question.questionCaptures?.length ? question.questionCaptures.map((capture) => capture.image) : question.figureImage ? [question.figureImage] : [];
+    sources.push(...(question.visualChoices??[]).map(choice=>choice.image));
     const embedded: EmbeddedPageImage[] = [];
     for (const source of sources) {
       if (!source.startsWith('data:image/jpeg;base64,')) continue;
@@ -176,7 +183,8 @@ function collectPageImages(questions: AnalyzedQuestion[]) {
         unique.push(image);
         byDataUrl.set(source, image);
       }
-      embedded.push(image);
+      const choice=question.visualChoices?.find(choice=>choice.image===source);
+      embedded.push(choice?{...image,label:`${choice.label} 원본 그림 선택지`}:image);
     }
     byQuestion.set(index, embedded);
   });

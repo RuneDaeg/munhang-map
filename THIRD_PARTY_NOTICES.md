@@ -1,12 +1,18 @@
 # Third-party notices
 
+## PDF equation-character recovery
+
+- `lib/pdf-text.ts` uses the PDF's font name, private-use code and a verified glyph-outline fingerprint to recover a bounded set of characters.
+- HyhwpEQ font software and outlines are **not bundled or redistributed**. Only semantic character values and check fingerprints are included. Embedded data is read in memory from a user-supplied PDF and released with that PDF.
+- Background reference on font-version differences: [이승준, 한글 수식 커스텀 폰트 만들기](https://leesj.me/hwp-custom-equation/). No code or font files were copied from this reference. The checks and character values were independently implemented and visually verified using the supplied PDF.
+
 ## HWPX base skeleton and packaging rules
 
 - Project: [jkf87/hwpx-skill](https://github.com/jkf87/hwpx-skill)
 - Revision used: `96a2633f23a08f707679d7e212ebdc59948260e6`
 - License: MIT, as declared by the upstream README
 - Incorporated material: files under `templates/base/`, copied to `public/hwpx-template/`
-- Adapted behavior: Workflow A packaging requirements, base-template style reuse, required `secPr`/`colPr`, unique paragraph IDs, XML escaping, `mimetype` as the first stored ZIP entry, removal of stale `linesegarray`, and preview-text refresh
+- Adapted behavior: Workflow A packaging requirements, base-template style reuse, required `secPr`/`colPr`, unique paragraph/object IDs, XML escaping, `mimetype` as the first stored ZIP entry, removal of stale `linesegarray`, preview-text refresh, native table/cell structure and matching row geometry. App-generated table border styles are appended without replacing the template's character styles.
 
 Copyright remains with jkf87 and the hwpx-skill contributors.
 

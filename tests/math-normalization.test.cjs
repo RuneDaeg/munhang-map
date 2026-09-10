@@ -125,8 +125,14 @@ test('web route uses the same plain-prose and valid JSON formula instructions', 
   });
   process.env.OPENAI_API_KEY = 'mock-test-key';
   global.fetch = async (_url, options) => {
-    const prompt = JSON.parse(options.body).input[0].content[0].text;
+    const body = JSON.parse(options.body);
+    assert.ok(body.text.format.schema.properties.questions.items.required.includes('blocks'));
+    const prompt = body.input[0].content[0].text;
     assert.match(prompt, /일반 자료표는 LaTeX array 대신/);
+    assert.ok(prompt.includes('\n:::box\n자료 문장\n:::\n'));
+    assert.match(prompt, /:::table/);
+    const structure = prompt.match(/줄바꿈을 포함한 올바른 구조 JSON 예: (\{[^\n]*\})/)[1];
+    assert.equal(JSON.parse(structure).latexText, '간접 발문\n:::box\n자료 문장\n:::\n직접 발문');
     const example = prompt.match(/올바른 JSON 예: (\{[^\n]*?\}) 이 예/)[1];
     assert.equal(JSON.parse(example).latexText, String.raw`속력은 60 km/h이다. 식은 $\frac{d}{t}$이다.`);
     return Response.json({ output: [{ content: [{ type: 'output_text', text: '{"questions":[]}' }] }] });

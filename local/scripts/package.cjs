@@ -3,8 +3,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const projectRoot = path.resolve(__dirname, '..', '..');
-const output = path.join(projectRoot, 'release', '문항맵-로컬');
-fs.rmSync(output, { recursive: true, force: true });
+const versioned=process.argv.includes('--versioned');
+const version=require('../../package.json').version;
+const output = path.join(projectRoot, 'release', versioned?`문항맵-로컬-${version}`:'문항맵-로컬');
+if(versioned && fs.existsSync(output)) throw new Error('이미 같은 버전의 실행 폴더가 있습니다. 덮어쓰지 않았습니다.');
+if(!versioned) fs.rmSync(output, { recursive: true, force: true });
 fs.mkdirSync(output, { recursive: true });
 fs.cpSync(path.join(projectRoot, 'desktop', 'renderer-dist'), path.join(output, 'renderer'), { recursive: true });
 for (const [source, target] of [

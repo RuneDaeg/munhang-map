@@ -13,6 +13,8 @@ export function serializeReview(fileName: string, questions: AnalyzedQuestion[],
       standardCode: question.standardCode, standard: question.standard, domain: question.domain, confidence: question.confidence,
       examSubject: question.examSubject, selectedSubjectKey: question.selectedSubjectKey,
       captureReviewed: question.captureReviewed, captureWarning: question.captureWarning, visionEnhanced: question.visionEnhanced,
+      textEdited: question.textEdited, analysisWarning: question.analysisWarning,
+      visualChoices: question.visualChoices?.map(({label,page,box})=>({label,page,box})),
       sourcePage: Math.max(1, sourcePages.indexOf(question.sourcePageImage ?? '') + 1),
       regions: question.questionCaptures?.map(({ page, box }) => ({ page, box })) ?? [],
     })),
@@ -30,6 +32,11 @@ export async function parseReview(content: string) {
     if (subject && (typeof subject.label !== 'string' || typeof subject.headerText !== 'string' || !Number.isInteger(subject.page) || !sourcePages[subject.page - 1] || !Array.isArray(subject.subjectKeys) || !subject.subjectKeys.every((key: unknown) => typeof key === 'string'))) throw new Error('검토 파일의 과목 정보가 올바르지 않습니다.');
     const captures = [];
     for (const region of item.regions) captures.push({ page: region.page, box: region.box, image: await cropPage(sourcePages[region.page - 1], region.box) });
+    const visualChoices: NonNullable<AnalyzedQuestion['visualChoices']>=[];
+    if(item.visualChoices!==undefined) {
+      if(!Array.isArray(item.visualChoices)||item.visualChoices.length>20||!item.visualChoices.every((v: {label?:string;page?:number;box?:unknown})=>typeof v?.label==='string'&&/^[①②③④⑤]$/.test(v.label)&&Number.isInteger(v.page)&&sourcePages[(v.page??0)-1]&&validCaptureBox(v.box))) throw new Error('그림 선택지 캡처 정보가 올바르지 않습니다.');
+      for(const choice of item.visualChoices) visualChoices.push({label:choice.label,page:choice.page,box:choice.box,image:await cropPage(sourcePages[choice.page-1],choice.box)});
+    }
     questions.push({
       number: item.number, type: item.type, text: normalizeQuestionText(item.text),
       standardCode: item.standardCode, standard: item.standard, domain: item.domain, confidence: item.confidence,
@@ -38,6 +45,9 @@ export async function parseReview(content: string) {
       captureReviewed: item.captureReviewed === true,
       captureWarning: typeof item.captureWarning === 'string' ? item.captureWarning : undefined,
       visionEnhanced: item.visionEnhanced === true,
+      textEdited: item.textEdited === true,
+      analysisWarning: typeof item.analysisWarning==='string'?item.analysisWarning.slice(0,3000):undefined,
+      visualChoices: visualChoices.length?visualChoices:undefined,
       sourcePageImage: sourcePages[item.sourcePage - 1], questionCaptures: captures,
     });
   }

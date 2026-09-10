@@ -21,6 +21,16 @@ function questionSnapshot(value, fileName) {
   });
   question.visionEnhanced = value.visionEnhanced === true;
   question.captureReviewed = value.captureReviewed === true;
+  question.textEdited = value.textEdited === true;
+  if(typeof value.analysisWarning==='string') question.analysisWarning=value.analysisWarning.slice(0,3000);
+  if(value.visualChoices!==undefined) {
+    if(!Array.isArray(value.visualChoices)||value.visualChoices.length>20) throw new Error('그림 선택지 목록이 올바르지 않습니다.');
+    question.visualChoices=value.visualChoices.map(choice=>{
+      if(typeof choice?.label!=='string'||!/^[①②③④⑤]$/.test(choice.label)) throw new Error('그림 선택지 번호가 올바르지 않습니다.');
+      const checked=questionSnapshot({...value,visualChoices:undefined,questionCaptures:[choice]},fileName).questionCaptures[0];
+      return {...checked,label:choice.label};
+    });
+  }
   if (typeof value.captureWarning === 'string') question.captureWarning = value.captureWarning.slice(0, 3000);
   return question;
 }

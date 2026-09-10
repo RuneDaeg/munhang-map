@@ -1,12 +1,17 @@
 import type { AnalyzedQuestion } from './pdf-analysis';
 import { joinCaptures } from './question-capture';
 import { normalizeQuestionText } from './math-normalization';
+import { countUnresolvedGlyphs, glyphWarning } from './pdf-text';
+import { overlayQuestionBoxes, parseQuestionContent, questionPlainText, questionTextFromBlocks, restoreQuestionStructure } from './question-content';
+import { includesRecognizedChoices, numberedApiChoices, preserveQuestionParts } from './question-completeness';
+import { preserveSourceStructures } from './structure-completeness';
 
 type NormalizedBox = [number, number, number, number];
 
 type VisionItem = {
   number: number;
   latexText: string;
+  blocks?: unknown;
   indirectStem: string;
   directStem: string;
   choices: string[];
@@ -75,6 +80,7 @@ export async function enhanceQuestionsWithVision(
 ) {
   const enhanced = [...questions];
   const failures: string[] = [];
+  const warnings: string[] = [];
   let completed = 0;
   for (const [index, question] of questions.entries()) {
     try {
@@ -85,11 +91,15 @@ export async function enhanceQuestionsWithVision(
       const result = await recognizeImage(image, [{ number: question.number, text: `${subject}${question.text}` }]);
       const recognized = result.questions?.find((item) => item.number === question.number);
       if (!recognized) throw new Error(`${question.number}번 문항의 판독 결과가 없습니다.`);
+      const completion = completeQuestionText(question.text, recognized);
+      if (completion.warning) warnings.push(`${question.number}번: ${completion.warning}`);
+      // Diagnostics contain no exam text, images, provider URLs, or credentials.
+      console.info('[recognition-structure]', { number: question.number, source: completion.source, warning: Boolean(completion.warning) });
       enhanced[index] = {
         ...question,
-        text: completeQuestionText(question.text, recognized),
+        text: completion.text,
         // PDF-coordinate captures are authoritative; AI boxes never overwrite them.
-        visionEnhanced: true,
+        visionEnhanced: completion.source !== 'original' && !countUnresolvedGlyphs(completion.text),
       };
     } catch (reason) {
       failures.push(reason instanceof Error ? reason.message : '비전 분석에 실패했습니다.');
@@ -97,7 +107,7 @@ export async function enhanceQuestionsWithVision(
     completed += 1;
     onProgress?.(completed, questions.length);
   }
-  return { questions: enhanced, failures };
+  return { questions: enhanced, failures, warnings };
 }
 
 async function recognizeImage(image: string, questions: VisionRequestQuestion[]) {
@@ -121,21 +131,57 @@ async function recognizeImage(image: string, questions: VisionRequestQuestion[])
 
 function completeQuestionText(original: string, recognized: VisionItem) {
   const normalizedOriginal = normalizeQuestionText(original);
-  const structured = [
-    (recognized.indirectStem ?? '').trim(),
-    (recognized.directStem ?? '').trim(),
-    ...(Array.isArray(recognized.choices) ? recognized.choices : []).filter((choice) => typeof choice === 'string').map((choice) => choice.trim()),
+  const labeledChoices = numberedApiChoices(recognized.choices);
+  const stemText = [
+    (typeof recognized.indirectStem === 'string' ? recognized.indirectStem : '').trim(),
+    (typeof recognized.directStem === 'string' ? recognized.directStem : '').trim(),
+    ...(labeledChoices.length ? labeledChoices : (Array.isArray(recognized.choices) ? recognized.choices : []).filter((choice) => typeof choice === 'string').map((choice) => choice.trim())),
   ].filter(Boolean).map(normalizeQuestionText).join('\n');
-  const full = normalizeQuestionText((recognized.latexText ?? '').trim());
-  const candidate = readableLength(structured) > readableLength(full) ? structured : full;
-  if (!candidate) return normalizedOriginal;
+  const full = normalizeQuestionText((typeof recognized.latexText === 'string' ? recognized.latexText : '').trim());
+  const hasStructure = (text: string) => parseQuestionContent(text).some((block) => block.kind !== 'text');
+  const baseline = readableLength(full) >= readableLength(stemText) ? full : stemText;
+  const structured = questionTextFromBlocks(recognized.blocks);
+  const canUseBlocks = structured !== undefined && readableLength(structured) >= readableLength(baseline) * 0.9 && coversText(structured, baseline) && includesRecognizedChoices(questionPlainText(structured), recognized.choices);
+  const overlay = !canUseBlocks ? overlayQuestionBoxes(baseline, structured ?? (hasStructure(full) ? full : '')) : undefined;
+  let candidate = canUseBlocks ? structured : overlay ?? baseline;
+  let source = canUseBlocks ? 'blocks' : overlay ? 'anchored-boxes' : 'text';
+  let warning = recognized.blocks !== undefined && !canUseBlocks ? 'AI의 표·상자 구조가 불완전해 전체 판독문을 보존했습니다. 원문과 비교해 주세요.' : '';
+  if (!candidate) return { text: restoreQuestionStructure(normalizedOriginal), source: 'original', warning: '판독문이 비어 기존 내용을 보존했습니다.' };
+  if (countUnresolvedGlyphs(candidate) > countUnresolvedGlyphs(normalizedOriginal)) {
+    candidate = normalizedOriginal;
+    source = 'original';
+    warning = '이미지 판독 결과에 깨진 문자가 늘어 기존 내용을 보존했습니다. 원문과 비교해 주세요.';
+  }
 
   const originalLength = readableLength(normalizedOriginal);
   const candidateLength = readableLength(candidate);
-  if (originalLength >= 50 && candidateLength < originalLength * 0.62) return normalizedOriginal;
-  return candidate;
+  if (originalLength >= 50 && candidateLength < originalLength * 0.62) {
+    candidate = normalizedOriginal;
+    source = 'original';
+    warning = '발문·자료·선택지 누락이 의심되어 기존 내용을 보존했습니다. 원문과 비교해 주세요.';
+  }
+  const parts = preserveQuestionParts(candidate, normalizedOriginal, recognized.choices, typeof recognized.directStem === 'string' ? recognized.directStem : '');
+  if (parts.keptOriginal) source = 'original';
+  warning = [warning, parts.warning].filter(Boolean).join(' ');
+  const protectedStructure = preserveSourceStructures(restoreQuestionStructure(parts.text), normalizedOriginal);
+  if(protectedStructure.text===normalizedOriginal && protectedStructure.warning) source='original';
+  warning=[warning,protectedStructure.warning].filter(Boolean).join(' ');
+  const text = restoreQuestionStructure(protectedStructure.text);
+  warning = [warning, glyphWarning(text)].filter(Boolean).join(' ');
+  return { text, source, warning };
+}
+
+function coversText(candidate: string, reference: string) {
+  const compact = (text: string) => questionPlainText(text).replace(/[\s\p{P}\p{S}]/gu, '');
+  const source = compact(reference);
+  if (!source) return true;
+  const counts = new Map<string, number>();
+  for (const char of compact(candidate)) counts.set(char, (counts.get(char) ?? 0) + 1);
+  let matched = 0;
+  for (const char of source) if (counts.get(char)) { matched += 1; counts.set(char, counts.get(char)! - 1); }
+  return matched / source.length >= 0.9;
 }
 
 function readableLength(value: string) {
-  return value.replace(/\s|\\(?:text|quad|mathrm)|[${}]/g, '').length;
+  return questionPlainText(value).replace(/\s|\\(?:text|quad|mathrm)|[${}]/g, '').length;
 }

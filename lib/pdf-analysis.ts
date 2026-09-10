@@ -2,6 +2,9 @@ import { layoutPage, locateQuestions, type PageLayout, type PageText } from './p
 import { detectExamSubject, type ExamSubject } from './exam-subject';
 import { cropPage, type QuestionCapture } from './question-capture';
 import type { PDFPageProxy } from 'pdfjs-dist';
+import { pdfRules, structureQuestionRegion, type Rule } from './pdf-structures';
+import { countUnresolvedGlyphs, extractPositionedText } from './pdf-text';
+import { pdfImageAreas, locateVisualChoices, type PdfImageArea } from './pdf-visual-choices';
 
 export type StandardCandidate = {
   code: string;
@@ -30,6 +33,9 @@ export type AnalyzedQuestion = {
   figureImage?: string;
   visionEnhanced?: boolean;
   questionCaptures?: QuestionCapture[];
+  visualChoices?: Array<QuestionCapture & {label:string}>;
+  analysisWarning?: string;
+  textEdited?: boolean;
   captureWarning?: string;
   captureReviewed?: boolean;
   examSubject?: ExamSubject;
@@ -72,22 +78,22 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
   const [pdfjs, allStandards] = await Promise.all([import('pdfjs-dist'), loadAchievementStandards()]);
   pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
   const source = new Uint8Array(await file.arrayBuffer());
-  const pdf = await pdfjs.getDocument({ data: source }).promise;
+  // Retain embedded glyph data for outline verification; never persist it.
+  // PDF.js otherwise releases font.data immediately after binding the font.
+  const pdf = await pdfjs.getDocument({ data: source, fontExtraProperties: true }).promise;
   const pages: PageLayout[] = [];
+  const geometry: Array<{ items: PageText[]; rules: Rule[]; images:PdfImageArea[]; mathWarnings:Array<{x:number;y:number}> }> = [];
   const pageImages: string[] = [];
   try {
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     const page = await pdf.getPage(pageNumber);
     const viewport = page.getViewport({ scale: 1 });
-    const [content, pageImage] = await Promise.all([page.getTextContent(), renderPageCapture(page)]);
-    const positioned: PageText[] = content.items
-      .filter((item): item is typeof item & { str: string; transform: number[]; width?: number } => 'str' in item && 'transform' in item && Boolean(item.str.trim()))
-      .map((item) => {
-        const transform = pdfjs.Util.transform(viewport.transform, item.transform);
-        const height = Math.hypot(transform[2], transform[3]);
-        return { text: item.str.trim(), x: transform[4], y: transform[5] - height, width: typeof item.width === 'number' ? item.width : 0, height };
-      });
-    pages.push(layoutPage(positioned, viewport.width, viewport.height, pageNumber));
+    const [content, pageImage, operators] = await Promise.all([page.getTextContent(), renderPageCapture(page), page.getOperatorList()]);
+    const rules = pdfRules(operators, pdfjs.OPS, viewport.transform);
+    const { items: positioned, mathWarnings } = extractPositionedText(content.items, viewport.transform, operators, pdfjs.OPS, (id) => page.commonObjs.get(id), rules);
+    const layout=layoutPage(positioned, viewport.width, viewport.height, pageNumber);
+    pages.push(layout);
+    geometry.push({items:layout.bodyItems,rules,images:pdfImageAreas(operators,pdfjs.OPS,viewport.transform),mathWarnings});
     pageImages.push(pageImage);
     page.cleanup();
     onProgress?.(pageNumber, pdf.numPages);
@@ -97,9 +103,9 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
   if (extractedText.length < 40) {
     throw new Error('이 PDF는 스캔 이미지로 구성되어 텍스트를 읽을 수 없습니다. OCR 기능이 필요한 문서입니다.');
   }
-  const brokenGlyphCount = (extractedText.match(/[�▤▥▦▧▨▩▒▓■]{1}/g) ?? []).length;
-  const qualityWarning = brokenGlyphCount / extractedText.length > 0.008
-    ? 'PDF 글꼴 또는 그림 일부가 깨진 문자로 추출되었습니다. 후보를 확정하기 전에 문항 텍스트를 확인하거나 OCR 처리된 PDF를 사용해 주세요.'
+  const brokenGlyphCount = countUnresolvedGlyphs(extractedText);
+  const qualityWarning = brokenGlyphCount
+    ? `PDF 기본 추출에서 ${brokenGlyphCount}개 문자를 복원하지 못했습니다. 원문 캡처와 대조가 필요합니다.`
     : '';
 
   const chunks = locateQuestions(pages);
@@ -113,14 +119,31 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
   onCaptureProgress?.(0, Math.min(chunks.length, 80));
   for (const chunk of chunks.slice(0, 80)) {
     const questionCaptures: QuestionCapture[] = [];
+    const visualChoices: NonNullable<AnalyzedQuestion['visualChoices']> = [];
+    const warnings: string[] = [];
     for (const region of chunk.regions) questionCaptures.push({ ...region, image: await cropPage(pageImages[region.page - 1], region.box) });
+    for (const region of chunk.regions) {
+      const source=geometry[region.page-1],page=pages[region.page-1];
+      for(const choice of locateVisualChoices(source.items,source.images,region.box,page.width,page.height))
+        visualChoices.push({...choice,page:region.page,image:await cropPage(pageImages[region.page-1],choice.box)});
+      if(source.mathWarnings.some(i=>i.x>=region.box[0]*page.width && i.x<(region.box[0]+region.box[2])*page.width && i.y>=region.box[1]*page.height && i.y<(region.box[1]+region.box[3])*page.height))
+        warnings.push('분수·루트의 일부 배치를 확정하지 못했습니다. 원문과 대조해 주세요.');
+    }
+    if(visualChoices.length) warnings.push('그림형 선택지는 셀 배치와 빗금을 원본 이미지로 보존했습니다. 아래 선택지 캡처를 기준으로 확인하세요.');
+    const structuredRegions = chunk.regions.map(region => {
+      const source = geometry[region.page-1], page = pages[region.page-1];
+      return structureQuestionRegion(source.items,source.rules,region.box,page.width,page.height);
+    });
+    const structuredText = structuredRegions.map(region=>region.text).join('\n').replace(new RegExp(`^\\s*${chunk.number}\\s*[.)]\\s*`),'') || chunk.text;
     questions.push(classifyQuestion({
       number: chunk.number,
       type: `자동 추출 문항 · ${chunk.page}쪽`,
-      text: chunk.text,
+      text: structuredText,
       standardCode: '', standard: '', confidence: 0, domain: '',
       sourcePageImage: pageImages[chunk.page - 1],
       questionCaptures,
+      visualChoices: visualChoices.length ? visualChoices : undefined,
+      analysisWarning: [...new Set(warnings)].join(' ') || undefined,
       captureWarning: chunk.warning,
       examSubject: subjects.get(chunk.page),
     }, allStandards));
