@@ -3,6 +3,7 @@
   "version": "0.5.1",
   "description": "모의고사 PDF 문항 분리·수식 복원·성취기준 분류 도구",
   "author": "문항맵",
+  "license": "MIT",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -18,6 +19,8 @@
     "desktop:win": "vite build --config desktop/vite.renderer.config.ts && electron-builder --projectDir desktop --config electron-builder.yml --win nsis --x64 --publish never",
     "local": "vite build --config desktop/vite.renderer.config.ts && node local/server.cjs",
     "local:package": "vite build --config desktop/vite.renderer.config.ts && node local/scripts/package.cjs",
+    "local:zip": "node local/scripts/zip.cjs",
+    "local:release": "vite build --config desktop/vite.renderer.config.ts && node local/scripts/package.cjs && node local/scripts/zip.cjs",
     "test:providers": "node --test tests/provider-client.test.cjs",
     "test:pdf": "node --test tests/pdf-analysis.test.cjs tests/capture-editor.test.cjs",
     "test:math": "node --test tests/math-normalization.test.cjs tests/question-view.test.cjs",

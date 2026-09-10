@@ -258,7 +258,9 @@ pnpm local
 
 ## 8. 로컬 실행 폴더 만들기
 
-소스에서 매번 실행하는 대신 실행 파일을 더블클릭하려면, 의존성 설치 후 다음 명령을 실행합니다.
+이미 만들어진 실행 폴더는 저장소의 **Releases** 페이지에서 `munhang-map-local-*.zip`으로 내려받을 수 있습니다. Node.js만 설치되어 있으면 pnpm·소스 없이 바로 쓸 수 있으므로, 다른 분께 전달할 때는 이 링크를 안내하세요.
+
+직접 만들려면 의존성 설치 후 다음 명령을 실행합니다.
 
 ```bash
 pnpm local:package
@@ -267,9 +269,17 @@ pnpm local:package
 결과는 `release/문항맵-로컬`입니다. **폴더 전체를** 복사하거나 ZIP으로 묶어 사용하세요. 실행 파일만 옮기면 안 됩니다.
 
 - Mac: 폴더 안의 `문항맵.command` 실행
+- Mac에서 “확인할 수 없는 개발자” 안내로 막히면 `문항맵.command`를 **우클릭 → 열기 → 열기**로 처음 한 번만 실행합니다. 다음부터는 더블클릭으로 열립니다.
 - Windows: 폴더 안의 `문항맵.bat` 실행
 - 받는 컴퓨터에도 Node.js 22.13 이상은 필요하지만, 빌드된 실행 폴더 사용에 pnpm·`node_modules` 설치는 필요하지 않습니다.
 - 내부 `renderer/index.html`을 직접 열지 않습니다.
+
+`pnpm local:release`를 쓰면 폴더 생성과 ZIP 압축까지 한 번에 끝납니다. 배포용 ZIP은 저장소에 커밋하지 않습니다. `package.json`의 `version`을 올리고 `v0.5.2` 같은 태그를 푸시하면 `.github/workflows/local-release.yml`이 ZIP을 만들어 검증한 뒤 릴리스에 첨부합니다.
+
+```bash
+git tag v0.5.2
+git push origin v0.5.2
+```
 
 `local:package`는 기존 `release/문항맵-로컬` **생성 폴더를 다시 만듭니다**. 그 안에 개인 PDF·검토 파일을 보관하지 마세요. GitHub의 **Download ZIP은 소스 압축 파일**이지 빌드된 실행 폴더가 아닙니다. `release/`는 소스 저장소에 포함하지 않습니다.
 
@@ -294,6 +304,10 @@ Node.js 설치 후 터미널을 닫고 다시 엽니다. `node --version`, `pnpm
 ### `package.json`을 찾을 수 없음 / 의존성 설치 실패
 
 압축을 완전히 풀었는지, `package.json`·`pnpm-lock.yaml`이 있는 최상위 폴더인지 확인합니다. pnpm은 10을 사용합니다. 오류 메시지와 인터넷·프록시 설정을 확인하고, 잠금 파일을 임의 삭제해 버전을 섞지 마세요.
+
+### Mac에서 “확인할 수 없는 개발자”라며 열리지 않음
+
+인터넷·메신저로 받은 파일에는 격리(quarantine) 속성이 붙어 Gatekeeper가 첫 실행을 막습니다. 파일이 손상된 것이 아닙니다. `문항맵.command`를 **우클릭 → 열기 → 열기**로 한 번만 실행하면 이후에는 더블클릭으로 열립니다. 그래도 막히면 **시스템 설정 → 개인정보 보호 및 보안**에서 차단 기록 옆의 **확인 없이 열기**를 누릅니다. 보안 설정 전체를 낮추지는 마세요. 폴더를 옮기는 과정에서 실행 권한이 사라졌다면 폴더 안에서 `chmod +x 문항맵.command`로 되돌립니다.
 
 ### 접속 실패 또는 ChatGPT 로그인 화면
 
@@ -363,7 +377,9 @@ pnpm desktop:mac
 pnpm desktop:win
 ```
 
-Mac용 ARM64 DMG, Windows용 x64 EXE 설정이며 `release/`에 생성됩니다. OS별 빌드 환경·코드 서명·공증은 별도 준비가 필요합니다. `.github/workflows/desktop-build.yml`은 수동 실행 또는 `desktop-v*` 태그 푸시 때 빌드를 시도하며, 일반 `main` 푸시만으로 자동 배포하지 않습니다. **내 문제함은 현재 로컬 서버 실행본에서 지원하며 Electron과 기능이 완전히 같지는 않습니다.**
+Mac용 ARM64 DMG, Windows용 x64 EXE 설정이며 `release/`에 생성됩니다. OS별 빌드 환경·코드 서명·공증은 별도 준비가 필요합니다. `.github/workflows/desktop-build.yml`은 수동 실행 또는 `desktop-v*` 태그 푸시 때 빌드를 시도하며, 일반 `main` 푸시만으로 자동 배포하지 않습니다. 로컬 실행본은 이와 별개로 `v*` 태그를 쓰는 `local-release.yml`이 담당합니다(8장 참고). **내 문제함은 현재 로컬 서버 실행본에서 지원하며 Electron과 기능이 완전히 같지는 않습니다.**
+
+서명·공증하지 않은 DMG·EXE는 받는 컴퓨터에서 macOS Gatekeeper나 Windows SmartScreen이 먼저 차단합니다. Mac은 앱을 **우클릭 → 열기 → 열기**, Windows는 SmartScreen 안내에서 **추가 정보 → 실행**을 거쳐야 설치됩니다. 배포 대상이 넓다면 서명·공증을 준비하는 편이 낫습니다.
 
 ## 12. 출처와 라이선스
 
@@ -373,4 +389,4 @@ Mac용 ARM64 DMG, Windows용 x64 EXE 설정이며 `release/`에 생성됩니다.
 - **2022 개정 성취기준:** [pblsketch/worksheet-grab의 data 디렉토리](https://github.com/pblsketch/worksheet-grab/tree/090e24e331f779a2e329cf686c5c5444f9221ca9/data). 해당 리비전의 `achievement-standards.csv`를 `public/data/`에 사용합니다.
 - **수식 미리보기:** [KaTeX](https://github.com/KaTeX/KaTeX).
 
-제3자 자료의 라이선스와 앱 자체 코드의 배포 조건은 구분합니다. **문항맵 자체 코드에는 별도 오픈소스 라이선스를 아직 지정하지 않았습니다.** 제3자 자료가 MIT라고 앱 전체에 자동 적용되지는 않습니다. 저장소 공개 여부와 자체 라이선스는 소유자가 별도로 결정합니다. 시험지·문항의 저작권과 재배포 권한도 소스 공개 여부와 별개입니다.
+제3자 자료의 라이선스와 앱 자체 코드의 배포 조건은 구분합니다. **문항맵 자체 코드는 MIT 라이선스입니다.** 전문은 [LICENSE](./LICENSE)에 있으며, 복사·재배포할 때 LICENSE와 THIRD_PARTY_NOTICES.md를 함께 유지하세요. 제3자 자료는 각각의 고지가 별도로 적용됩니다. 시험지·문항의 저작권과 재배포 권한은 이 라이선스와 무관하며, 문제함·검토 파일에 담긴 시험지 원문을 공유할 권한은 사용자가 직접 확인해야 합니다.
