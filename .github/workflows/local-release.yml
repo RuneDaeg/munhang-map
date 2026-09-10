@@ -1,0 +1,132 @@
+name: Local release
+
+# v* 태그를 밀면 로컬 실행본 ZIP을 만들어 릴리스에 첨부합니다.
+# 데스크톱 설치 파일은 desktop-v* 태그를 쓰는 desktop-build.yml이 담당합니다.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      # Electron 바이너리는 로컬 실행본 빌드에 쓰이지 않습니다.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm local:release
+
+      - name: 배포본 검증
+        # unzip은 로케일에 따라 한글 이름을 이스케이프해 출력하므로
+        # 파일 목록 확인은 zipfile로 직접 합니다.
+        run: |
+          python3 - <<'PY'
+          import sys, zipfile
+          path = 'release/문항맵-로컬.zip'
+          z = zipfile.ZipFile(path)
+          names = set(z.namelist())
+
+          broken = z.testzip()
+          if broken:
+              sys.exit(f'CRC 오류: {broken}')
+
+          required = [
+              '문항맵-로컬/LICENSE',
+              '문항맵-로컬/THIRD_PARTY_NOTICES.md',
+              '문항맵-로컬/사용법.txt',
+              '문항맵-로컬/문항맵.command',
+              '문항맵-로컬/문항맵.bat',
+              '문항맵-로컬/server.cjs',
+              '문항맵-로컬/renderer/index.html',
+              '문항맵-로컬/renderer/data/achievement-standards.csv',
+              '문항맵-로컬/renderer/pdf.worker.min.mjs',
+          ]
+          missing = [name for name in required if name not in names]
+          if missing:
+              sys.exit('배포본에 빠진 파일: ' + ', '.join(missing))
+
+          # 키·개인 자료가 섞이지 않았는지 확인합니다.
+          import re
+          forbidden = re.compile(r'(^|/)\.env|api-key\.enc|local-master-key\.bin|(^|/)settings\.json$|\.pdf$|_검토\.json$')
+          leaked = [name for name in names if forbidden.search(name)]
+          if leaked:
+              sys.exit('배포본에 포함되면 안 되는 파일: ' + ', '.join(leaked))
+
+          # 한글 이름이 Windows에서 깨지지 않으려면 UTF-8 플래그가 필요합니다.
+          no_utf8 = [i.filename for i in z.infolist()
+                     if any(ord(c) > 127 for c in i.filename) and not (i.flag_bits & 0x800)]
+          if no_utf8:
+              sys.exit('UTF-8 플래그가 없는 항목: ' + ', '.join(no_utf8))
+
+          # 실행 권한이 없으면 Mac에서 더블클릭이 되지 않습니다.
+          mode = (z.getinfo('문항맵-로컬/문항맵.command').external_attr >> 16) & 0o777
+          if not mode & 0o111:
+              sys.exit(f'문항맵.command 실행 권한 없음: {oct(mode)}')
+
+          print(f'검증 통과: {len(names)}개 항목, 문항맵.command {oct(mode)}')
+          PY
+
+      - name: 자산 이름 정하기
+        id: asset
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(node -p "require('./package.json').version")-manual"
+          fi
+          # 다운로드 링크가 깨지지 않도록 자산 이름은 ASCII로 둡니다.
+          # 압축을 풀면 폴더 이름은 그대로 "문항맵-로컬"입니다.
+          name="munhang-map-local-${version}.zip"
+          cp "release/문항맵-로컬.zip" "release/${name}"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
+      - name: 릴리스 노트 작성
+        if: github.ref_type == 'tag'
+        run: |
+          cat > release-notes.md <<'NOTES'
+          ## 설치 방법
+
+          1. 아래 `munhang-map-local-*.zip`을 내려받아 압축을 풉니다.
+          2. **Node.js 22 이상 LTS**를 설치합니다: https://nodejs.org
+          3. Mac은 `문항맵.command`, Windows는 `문항맵.bat`를 실행합니다.
+
+          Mac에서 "확인할 수 없는 개발자" 안내로 열리지 않으면 `문항맵.command`를
+          **우클릭 → 열기 → 열기**로 처음 한 번만 실행하세요. 다음부터는 더블클릭으로 열립니다.
+
+          폴더 전체를 옮기거나 복사하세요. 실행 파일만 따로 옮기면 동작하지 않습니다.
+          자세한 사용법은 압축 폴더 안의 `사용법.txt`에 있습니다.
+
+          AI 판독을 쓰지 않으면 API 키 없이도 문항 분리·캡처·성취기준 분류·문서 내보내기가 됩니다.
+          NOTES
+
+      - name: 릴리스에 첨부
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: release/${{ steps.asset.outputs.name }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "$ASSET" \
+            --title "문항맵 $GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+          || gh release upload "$GITHUB_REF_NAME" "$ASSET" --clobber
+
+      - name: 수동 실행이면 아티팩트로만 보관
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: munhang-map-local
+          path: release/${{ steps.asset.outputs.name }}
+          if-no-files-found: error
