@@ -1,6 +1,6 @@
 {
   "name": "munhang-map",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "모의고사 PDF 문항 분리·수식 복원·성취기준 분류 도구",
   "author": "문항맵",
   "license": "MIT",
