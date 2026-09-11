@@ -3,8 +3,9 @@ import { joinCaptures } from './question-capture';
 import { normalizeQuestionText } from './math-normalization';
 import { countUnresolvedGlyphs, glyphWarning } from './pdf-text';
 import { overlayQuestionBoxes, parseQuestionContent, questionPlainText, questionTextFromBlocks, restoreQuestionStructure } from './question-content';
-import { includesRecognizedChoices, numberedApiChoices, preserveQuestionParts } from './question-completeness';
+import { hasDuplicatedStem, includesRecognizedChoices, numberedApiChoices, preserveQuestionParts } from './question-completeness';
 import { preserveSourceStructures } from './structure-completeness';
+import { mathQualityIssues } from './math-quality';
 
 type NormalizedBox = [number, number, number, number];
 
@@ -95,16 +96,19 @@ export async function enhanceQuestionsWithVision(
       if (completion.warning) warnings.push(`${question.number}번: ${completion.warning}`);
       // Diagnostics contain no exam text, images, provider URLs, or credentials.
       console.info('[recognition-structure]', { number: question.number, source: completion.source, warning: Boolean(completion.warning) });
+      const assessmentText = completion.source === 'original' ? question.assessmentText : question.sharedPassage
+        ? normalizeQuestionText([recognized.indirectStem,recognized.directStem,...numberedApiChoices(recognized.choices)].filter(s=>typeof s==='string').join('\n'))
+        : completion.text;
+      const assessmentIssues = mathQualityIssues(assessmentText ?? '');
+      if (assessmentIssues.length) warnings.push(`${question.number}번 개별 발문: ${assessmentIssues.map(issue=>issue.message).join(' ')}`);
       enhanced[index] = {
         ...question,
         text: completion.text,
-        assessmentText: completion.source === 'original' ? question.assessmentText : question.sharedPassage
-          ? [recognized.indirectStem,recognized.directStem,...numberedApiChoices(recognized.choices)].filter(s=>typeof s==='string').join('\n')
-          : completion.text,
+        assessmentText,
         mappingReason: undefined,
         validationFlags: undefined,
         // PDF-coordinate captures are authoritative; AI boxes never overwrite them.
-        visionEnhanced: completion.source !== 'original' && !countUnresolvedGlyphs(completion.text),
+        visionEnhanced: completion.source !== 'original' && !countUnresolvedGlyphs(completion.text) && !mathQualityIssues(completion.text).length && !hasDuplicatedStem(completion.text) && !assessmentIssues.length,
       };
     } catch (reason) {
       failures.push(reason instanceof Error ? reason.message : '비전 분석에 실패했습니다.');
@@ -171,7 +175,15 @@ function completeQuestionText(original: string, recognized: VisionItem) {
   const protectedStructure = preserveSourceStructures(restoreQuestionStructure(parts.text), normalizedOriginal);
   if(protectedStructure.text===normalizedOriginal && protectedStructure.warning) source='original';
   warning=[warning,protectedStructure.warning].filter(Boolean).join(' ');
-  const text = restoreQuestionStructure(protectedStructure.text);
+  let text = normalizeQuestionText(restoreQuestionStructure(protectedStructure.text));
+  const mathIssues=mathQualityIssues(text);
+  if(mathIssues.length || hasDuplicatedStem(text)) {
+    if(normalizedOriginal.trim() && !mathQualityIssues(normalizedOriginal).length && !hasDuplicatedStem(normalizedOriginal)) {
+      text=restoreQuestionStructure(normalizedOriginal);
+      source='original';
+      warning=[warning,'AI 판독문에 수식·중복 오류가 있어 기존 추출문을 보존했습니다. 원문과 비교해 주세요.'].filter(Boolean).join(' ');
+    } else warning=[warning,...mathIssues.map(issue=>issue.message),hasDuplicatedStem(text)?'발문 전체가 반복되어 있습니다. 원문과 비교해 주세요.':''].filter(Boolean).join(' ');
+  }
   warning = [warning, glyphWarning(text)].filter(Boolean).join(' ');
   return { text, source, warning };
 }

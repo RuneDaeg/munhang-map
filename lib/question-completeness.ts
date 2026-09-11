@@ -6,6 +6,12 @@ type Choice = { label: string; text: string };
 const compact = (text: string) => text.replace(/\s/g, '').replace(/[’‘]/g, "'").replace(/[“”]/g, '"');
 const inlineQuestion = (text: string) => /밑줄\s*친|어법상|문맥상.*(?:낱말|어휘)|문장.*넣기에.*위치/.test(text.slice(0, 350));
 
+/** Flag an entire long stem repeated twice, not repeated phrases inside a passage. */
+export function hasDuplicatedStem(text: string): boolean {
+  const stem = text.split(/(?:^|\n)\s*①\s/)[0].replace(/\s/g, '');
+  return stem.length >= 240 && stem.length % 2 === 0 && stem.slice(0, stem.length / 2) === stem.slice(stem.length / 2);
+}
+
 function indexText(text: string, ignoreMarkers = false) {
   let value = '';
   const offsets: number[] = [];

@@ -2,7 +2,8 @@ import type { AnalyzedQuestion, StandardRecord } from './pdf-analysis';
 import { countUnresolvedGlyphs } from './pdf-text';
 import { questionPlainText } from './question-content';
 import { ownAssessmentText } from './assessment-mapping';
-import { hasUnbalancedMathDelimiters } from './math-normalization';
+import { mathQualityIssues } from './math-quality';
+import { hasDuplicatedStem } from './question-completeness';
 
 export type ValidationFlag = { code: string; message: string };
 
@@ -14,12 +15,16 @@ export function validateQuestion(
   const flags: ValidationFlag[] = [];
   const add = (code: string, message: string) => flags.push({ code, message });
   const text = question.text;
+  flags.push(...mathQualityIssues(text));
+  if (hasDuplicatedStem(text))
+    add('duplicated_stem', '발문·자료 전체가 두 번 반복되어 있습니다. 원문과 비교해 주세요.');
   const own = ownAssessmentText(question) || text;
+  if (own !== text) for (const issue of mathQualityIssues(own))
+    if (!flags.some(flag => flag.code === issue.code))
+      flags.push({ ...issue, message: `개별 발문: ${issue.message}` });
   const plain = questionPlainText(own);
   if (countUnresolvedGlyphs(text))
     add('pua_present', '복원되지 않은 문자가 있습니다. 원문을 확인해 주세요.');
-  if (hasUnbalancedMathDelimiters(text))
-    add('latex_unbalanced', '수식 구분자 $의 짝이 맞지 않습니다.');
   if (/\\n(?![A-Za-z])/.test(text))
     add('escaped_newline', '줄바꿈이 문자 \\n으로 남아 있습니다.');
   if (

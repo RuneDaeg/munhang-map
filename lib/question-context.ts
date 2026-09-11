@@ -1,4 +1,5 @@
 import type { AnalyzedQuestion } from './pdf-analysis';
+import { normalizeQuestionText } from './math-normalization';
 
 type Context = Pick<
   AnalyzedQuestion,
@@ -18,7 +19,7 @@ export function readQuestionContext(
     typeof value.assessmentText === 'string' &&
     value.assessmentText.length <= 200000
   )
-    result.assessmentText = value.assessmentText;
+    result.assessmentText = normalizeQuestionText(value.assessmentText);
   for (const key of ['mappingArea', 'mappingReason'] as const)
     if (typeof value[key] === 'string') result[key] = value[key].slice(0, 3000);
   const s = value.sharedPassage as Record<string, unknown> | undefined;
@@ -37,7 +38,7 @@ export function readQuestionContext(
   )
     result.sharedPassage = {
       range: [s.range[0], s.range[1]],
-      text: s.text,
+      text: normalizeQuestionText(s.text),
       pages: [...new Set(s.pages as number[])],
     };
   if (Array.isArray(value.validationFlags))

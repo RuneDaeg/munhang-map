@@ -2,7 +2,7 @@
 
 import { memo } from 'react';
 import katex from 'katex';
-import { normalizeQuestionText, splitMathText } from '../lib/math-normalization';
+import { mathForRendering, normalizeQuestionText, splitMathText } from '../lib/math-normalization';
 import { parseQuestionContent, questionPlainText, tableColumnWeights } from '../lib/question-content';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { textRuns } from '../lib/text-formatting';
@@ -15,7 +15,7 @@ function MathParts({ text }: { text: string }) {
         if (!part.math) return <span key={index}>{part.text}</span>;
         const { display: displayMode } = part;
         // Exam operators place limits above/below even inside a Korean sentence.
-        const expression=part.text.replace(/\\(lim|sum|prod)(?![A-Za-z]|\s*\\limits)/g,'\\$1\\limits');
+        const expression=mathForRendering(part.text);
         const html = katex.renderToString(expression, { displayMode, throwOnError: false, strict: false, trust: false, output: 'html' });
         return displayMode
           ? <span key={`${index}-${expression}`} className="my-2 block overflow-x-auto" dangerouslySetInnerHTML={{ __html: html }} />

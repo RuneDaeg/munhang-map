@@ -10,9 +10,36 @@ export function hasUnbalancedMathDelimiters(value: string): boolean {
   return (maskChoiceCurrency(value).match(/(?<!\\)\$/g)?.length ?? 0) % 2 !== 0;
 }
 
+/** Only known JSON escape damage inside a math span; prose tabs stay tabs. */
+function repairMathEscapes(value: string): string {
+  return value
+    // A double-escaped command outside an environment is not a row break.
+    // Leave array/cases bodies (and their legitimate \\ separators) untouched.
+    .replace(/\\begin\{(array|[bpBvV]?matrix|cases|aligned)\}[\s\S]*?\\end\{\1\}|(?<!\\)\\\\(left|right|sum|prod|lim|frac|sqrt|overline)(?![A-Za-z])/g,
+      (match, _environment: string | undefined, command: string | undefined) => command ? `\\${command}` : match)
+    // oxlint-disable-next-line no-control-regex -- A JSON backspace swallowed the leading b.
+    .replace(/\u0008(igg?[lrm]?)(?=\s*(?:[()[\]|.]|\\))/g, '\\b$1')
+    // oxlint-disable-next-line no-control-regex -- Recover named commands only, not arbitrary controls.
+    .replace(/\u0008(ar|inom)(?=\s*\{)/g, '\\b$1')
+    // oxlint-disable-next-line no-control-regex -- JSON-decoded beta.
+    .replace(/\u0008(eta)(?![A-Za-z])/g, '\\b$1')
+    .replace(/\t(o|imes|heta|au|an)(?![A-Za-z])/g, '\\t$1')
+    .replace(/\t(frac|ilde)(?=\s*\{)/g, '\\t$1')
+    // oxlint-disable-next-line no-control-regex -- A JSON form feed swallowed the f in frac.
+    .replace(/\u000crac(?=\s*\{)/g, '\\frac')
+    .replace(/\right(?=\s*(?:[()[\]|.]|\\))/g, '\\right')
+    // A typeset lim with a condition is an operator, not a text subscript.
+    .replace(/\\(?:text|mathrm|operatorname)\s*\{\s*lim\s*\}(?=\s*(?:_|\\limits))/g, '\\lim');
+}
+
+/** Keep renderer and syntax validation on the same operator layout. */
+export function mathForRendering(value: string): string {
+  return value.replace(/(?<!\\)((?:\\\\)*)\\(lim|sum|prod)(?![A-Za-z]|\s*\\(?:no)?limits)/g,'$1\\$2\\limits');
+}
+
 // Match complete math spans only. Incomplete input remains editable plain text.
 // Legacy OCR sometimes omitted delimiters around a whole array/table.
-const mathSpans = /(?<!\\)(\$\$[\s\S]+?\$\$|\$(?:\\[^\n]|[^$\n])+?\$|\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]|\\begin\{(array|[bpBvV]?matrix|cases|aligned)\}[\s\S]+?\\end\{\2\})/g;
+const mathSpans = /(?<!\\)(\$\$[\s\S]+?\$\$|\$(?:\\[^\n]|[^$\n]|\n(?=[ \t]*\\))+?\$|\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]|\\begin\{(array|[bpBvV]?matrix|cases|aligned)\}[\s\S]+?\\end\{\2\})/g;
 
 // Prose needs real symbols, not math wrappers around entire Korean sentences.
 const proseSymbols: Record<string, string> = {
@@ -108,11 +135,7 @@ export function normalizeQuestionText(value: string): string {
   const expressions: string[] = [];
   const prose = splitMathText(repaired).map((part) => {
     if (!part.math) return part.text;
-    const expression = part.text
-      // oxlint-disable-next-line no-control-regex -- Repair JSON-decoded form feed before frac.
-      .replace(/\u000crac(?=\s*\{)/g, '\\frac')
-      .replace(/\t(imes|heta)\b/g, '\\t$1')
-      .replace(/\right(?=[([.|\\])/g, '\\right');
+    const expression = repairMathEscapes(part.text);
     const unwrapped = unwrapText(expression);
     // Labels inside actual formulae (fractions, subscripts, matrices, etc.)
     // must remain LaTeX. Only math spans consisting of prose/values are flattened.
