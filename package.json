@@ -1,6 +1,6 @@
 {
   "name": "munhang-map",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "description": "모의고사 PDF 문항 분리·수식 복원·성취기준 분류 도구",
   "author": "문항맵",
   "license": "MIT",
@@ -25,7 +25,7 @@
     "test:pdf": "node --test tests/pdf-analysis.test.cjs tests/capture-editor.test.cjs",
     "test:glyphs": "node --test tests/pdf-text.test.cjs",
     "test:math": "node --test tests/math-normalization.test.cjs tests/question-view.test.cjs",
-    "test:workflow": "node --test tests/analysis-workflow.test.cjs tests/question-bank.test.cjs tests/standard-export.test.cjs",
+    "test:workflow": "node --test tests/analysis-workflow.test.cjs tests/question-bank.test.cjs tests/standard-export.test.cjs tests/capture-export.test.cjs",
     "test:tables": "node --test tests/question-content.test.cjs tests/box-recovery.test.cjs tests/pdf-structures.test.cjs",
     "test:manual": "node --test tests/manual-issues.test.cjs",
     "test:formatting": "node --test tests/text-formatting.test.cjs",

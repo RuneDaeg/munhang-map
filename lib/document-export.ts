@@ -52,6 +52,69 @@ export async function downloadStandardArchive(title: string, questions: Analyzed
   saveBlob(await createStandardArchive(title, questions, format, onProgress), safeName(`${title.replace(/\.pdf$/i, '')}_성취기준별_${format}`, 'zip'), 'application/zip');
 }
 
+export function captureExportSummary(questions: AnalyzedQuestion[], title = '시험지') {
+  const missing = questions.filter((question) => !question.questionCaptures?.length);
+  return {
+    imageCount: questions.reduce((count, question) => count + (question.questionCaptures?.length ?? 0), 0),
+    missing,
+    missingLabels: missing.slice(0, 5).map((question) => `선택 ${questions.indexOf(question) + 1} · ${captureFileStem(question.sourceFileName || title)} ${question.number}번`).join(', '),
+    reviewCount: questions.filter((question) => question.captureWarning && !question.captureReviewed).length,
+  };
+}
+
+function captureFileStem(name: string) {
+  // Keep a basename only, including when a Windows path was imported on a Mac.
+  const basename = name.split(/[\\/]/).pop() ?? '';
+  // oxlint-disable-next-line no-control-regex -- Strip controls and bidi overrides from download filenames.
+  return Array.from(basename.replace(/\.pdf$/i, '').normalize('NFC').replace(/[\\/:*?"<>|\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, '_')).slice(0, 50).join('').replace(/^[. ]+|[. ]+$/g, '') || '시험지';
+}
+
+export async function createCaptureArchive(title: string, questions: AnalyzedQuestion[], onProgress?: (completed: number, total: number) => void) {
+  if (!questions.length) throw new Error('내보낼 문항을 선택해 주세요.');
+  const { imageCount, missing, missingLabels } = captureExportSummary(questions, title);
+  if (missing.length) {
+    throw new Error(`캡처가 없는 문항 ${missing.length}개 (${missingLabels}${missing.length > 5 ? ' 외' : ''})가 있습니다. 원본 PDF·검토 파일에서 캡처를 확인하거나 내 문제함에서 캡처가 있는 문항만 선택해 주세요.`);
+  }
+  if (imageCount > 1000) throw new Error('한 번에 캡처 1,000장까지 내보낼 수 있습니다. 문항을 나누어 선택해 주세요.');
+  const entries: ZipEntry[] = [];
+  let totalBytes = 0;
+  onProgress?.(0, imageCount);
+  for (const [index, question] of questions.entries()) {
+    if (!Number.isSafeInteger(question.number) || question.number < 1) throw new Error('문항 번호를 확인해 주세요.');
+    const prefix = `${String(index + 1).padStart(3, '0')}_${captureFileStem(question.sourceFileName || title)}_${String(question.number).padStart(3, '0')}번`;
+    for (const [part, capture] of question.questionCaptures!.entries()) {
+      const invalid = () => new Error(`선택 ${index + 1} · ${captureFileStem(question.sourceFileName || title)} ${question.number}번의 ${part + 1}번째 캡처를 읽을 수 없습니다. 원본 PDF·검토 파일에서 캡처 범위를 다시 확인해 주세요.`);
+      if (!Number.isSafeInteger(capture.page) || capture.page < 1 || typeof capture.image !== 'string') throw invalid();
+      // Never fetch URLs, substitute a whole source page, include visualChoices,
+      // deduplicate shared passages, or re-encode images in this image-only path.
+      const header = /^data:image\/(jpeg|png);base64,/.exec(capture.image);
+      if (!header) throw invalid();
+      const encoded = capture.image.slice(header[0].length);
+      const expectedBytes = encoded.length / 4 * 3 - (encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0);
+      if (totalBytes + expectedBytes > 150_000_000) throw new Error('캡처 이미지가 150MB를 넘습니다. 문항을 나누어 내보내 주세요.');
+      if (!encoded.length || encoded.length % 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw invalid();
+      let data: Uint8Array;
+      try { data = dataUrlBytes(capture.image); } catch { throw invalid(); }
+      const jpegSize = header[1] === 'jpeg' ? jpegDimensions(data) : undefined;
+      const valid = header[1] === 'jpeg'
+        ? data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff && data.at(-2) === 0xff && data.at(-1) === 0xd9 && jpegSize && jpegSize.every((size) => size > 0)
+        : data.length >= 45 && [137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82].every((byte, position) => data[position] === byte)
+          && [0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130].every((byte, position) => data[data.length - 12 + position] === byte)
+          && new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(16) > 0 && new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(20) > 0;
+      if (!valid) throw invalid();
+      totalBytes += data.length;
+      entries.push({ name: `${prefix}_${String(part + 1).padStart(2, '0')}_${capture.page}쪽.${header[1] === 'jpeg' ? 'jpg' : 'png'}`, data });
+      onProgress?.(entries.length, imageCount);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+  return zip(entries);
+}
+
+export async function downloadCaptureArchive(title: string, questions: AnalyzedQuestion[], onProgress?: (completed: number, total: number) => void) {
+  saveBlob(await createCaptureArchive(title, questions, onProgress), `${captureFileStem(title)}_문항캡처.zip`, 'application/zip');
+}
+
 export function downloadDocx(title: string, questions: AnalyzedQuestion[]) {
   saveBlob(createDocxBytes(title, questions), safeName(title, 'docx'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 }

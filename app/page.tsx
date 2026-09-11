@@ -421,7 +421,7 @@ export default function Home() {
                 <Button variant="outline" onClick={() => reviewInputRef.current?.click()} disabled={busy}>검토 파일 열기</Button>
                 <Button variant="outline" onClick={() => downloadReview(fileName, checkedQuestions, sourcePages)} disabled={busy || !sourcePages.length}>검토 저장</Button>
                 <Button variant="outline" onClick={() => void saveCurrentToBank()} disabled={busy || isDemo || status !== 'ready' || !sourcePages.length || !questionData.length}>{savingBank ? <LoaderCircle className="animate-spin" /> : <FolderOpen />}{savingBank ? '문제함 저장 중…' : '문제함에 저장'}</Button>
-                <Button onClick={() => setExportOpen(true)} disabled={busy || !questionData.length} className="bg-primary px-4 text-primary-foreground hover:bg-primary/90"><Download /> 문서 내보내기</Button>
+                <Button onClick={() => setExportOpen(true)} disabled={busy || !questionData.length} className="bg-primary px-4 text-primary-foreground hover:bg-primary/90"><Download /> 내보내기</Button>
               </div>
             </div>
 
