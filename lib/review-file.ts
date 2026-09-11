@@ -2,6 +2,7 @@ import type { AnalyzedQuestion } from './pdf-analysis';
 import { cropPage } from './question-capture';
 import { validCaptureBox } from './capture-editor';
 import { normalizeQuestionText } from './math-normalization';
+import { readQuestionContext } from './question-context';
 
 const format = 'munhang-map-review';
 
@@ -14,6 +15,7 @@ export function serializeReview(fileName: string, questions: AnalyzedQuestion[],
       examSubject: question.examSubject, selectedSubjectKey: question.selectedSubjectKey,
       captureReviewed: question.captureReviewed, captureWarning: question.captureWarning, visionEnhanced: question.visionEnhanced,
       textEdited: question.textEdited, analysisWarning: question.analysisWarning,
+      ...readQuestionContext(question as unknown as Record<string,unknown>),
       visualChoices: question.visualChoices?.map(({label,page,box})=>({label,page,box})),
       sourcePage: Math.max(1, sourcePages.indexOf(question.sourcePageImage ?? '') + 1),
       regions: question.questionCaptures?.map(({ page, box }) => ({ page, box })) ?? [],
@@ -38,6 +40,7 @@ export async function parseReview(content: string) {
       for(const choice of item.visualChoices) visualChoices.push({label:choice.label,page:choice.page,box:choice.box,image:await cropPage(sourcePages[choice.page-1],choice.box)});
     }
     questions.push({
+      ...readQuestionContext(item,sourcePages.length),
       number: item.number, type: item.type, text: normalizeQuestionText(item.text),
       standardCode: item.standardCode, standard: item.standard, domain: item.domain, confidence: item.confidence,
       selectedSubjectKey: typeof item.selectedSubjectKey === 'string' ? item.selectedSubjectKey : undefined,

@@ -8,7 +8,7 @@ const original = { number: 1, text: '기본 추출문', questionCaptures: [{ ima
 const makeDeps = (overrides = {}) => ({
   analyzePdf: async (_file, page, capture) => { page(1, 1); capture(0, 1); capture(1, 1); return { questions: [original], sourcePages: ['page'], pageCount: 1, qualityWarning: '' }; },
   getVisionStatus: async () => ({ available: true }),
-  loadAchievementStandards: async () => [],
+  loadAchievementStandards: async () => [{school:'고등학교',subject:'통합과학1',grade:'고1',code:'[test]',statement:'측정값을 비교한다.'}],
   classifyQuestion: (question) => ({ ...question, standardCode: '[test]' }),
   enhanceQuestionsWithVision: async (questions, progress) => { progress(1, 1); return { questions, failures: [] }; },
   ...overrides,

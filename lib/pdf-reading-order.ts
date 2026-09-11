@@ -1,5 +1,6 @@
 import type { PageText } from './pdf-layout';
 import type { PdfStructure } from './pdf-structures';
+import { styledItemText } from './pdf-source-formatting';
 
 const median = (ns: number[]) =>
   [...ns].sort((a, b) => a - b)[Math.floor(ns.length / 2)] || 8;
@@ -22,7 +23,7 @@ function rows(items: PageText[]) {
 }
 const textOf = (items: PageText[]) =>
   rows(items)
-    .map((row) => row.map((i) => i.text).join(' '))
+    .map((row) => row.map(styledItemText).join(' '))
     .join('\n');
 
 /** Components stop at the white gutters between adjacent speech bubbles. */

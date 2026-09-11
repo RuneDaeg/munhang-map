@@ -23,6 +23,14 @@ function questionSnapshot(value, fileName) {
   question.captureReviewed = value.captureReviewed === true;
   question.textEdited = value.textEdited === true;
   if(typeof value.analysisWarning==='string') question.analysisWarning=value.analysisWarning.slice(0,3000);
+  if(typeof value.assessmentText==='string' && value.assessmentText.length<=200000) question.assessmentText=value.assessmentText;
+  for(const key of ['mappingArea','mappingReason']) if(typeof value[key]==='string') question[key]=value[key].slice(0,3000);
+  const shared=value.sharedPassage;
+  if(shared && Array.isArray(shared.range) && shared.range.length===2 && shared.range.every(n=>Number.isInteger(n)&&n>=1&&n<=200) && shared.range[0]<=shared.range[1]
+    && typeof shared.text==='string' && shared.text.length<=200000 && Array.isArray(shared.pages) && shared.pages.length>0 && shared.pages.length<=200 && shared.pages.every(p=>Number.isInteger(p)&&p>=1&&p<=200))
+    question.sharedPassage={range:[...shared.range],text:shared.text,pages:[...new Set(shared.pages)]};
+  if(Array.isArray(value.validationFlags)) question.validationFlags=value.validationFlags.slice(0,30).flatMap(f=>
+    f && typeof f.code==='string' && /^[a-z_]{1,60}$/.test(f.code) && typeof f.message==='string' ? [{code:f.code,message:f.message.slice(0,3000)}] : []);
   if(value.visualChoices!==undefined) {
     if(!Array.isArray(value.visualChoices)||value.visualChoices.length>20) throw new Error('그림 선택지 목록이 올바르지 않습니다.');
     question.visualChoices=value.visualChoices.map(choice=>{

@@ -25,6 +25,7 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
     baseline: r.baseline ?? r.y + r.height,
     equation: !!r.equation,
     sourceIds: [id],
+    latex: r.equation && /^(?:sin|cos|tan|log|ln)$/.test(r.text) ? `\\${r.text}` : undefined,
   }));
   const removed = new Set<number>(),
     warnings: MathWarning[] = [],
@@ -181,7 +182,7 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
       (r) =>
         bar(r) &&
         Math.abs(r.x - right(root)) < root.height * 0.18 &&
-        baseOf(root) - baseOf(r) > root.height * 0.28 &&
+        baseOf(root) - baseOf(r) > root.height * 0.1 &&
         baseOf(root) - baseOf(r) < root.height * 0.75 &&
         r.width > root.width * 0.6 &&
         !across(root, r),
@@ -191,6 +192,56 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
       roofs.add(candidates[0].id);
     }
   }
+
+  // A segment accent has contiguous capitals below it and no math numerator.
+  // Prose punctuation on the preceding line cannot become a numerator.
+  for (const line of active().filter((r) => bar(r) && !roofs.has(r.id))) {
+    const h = line.height;
+    const contained = active().filter((r) => r.id !== line.id &&
+      r.x >= line.x - h * 0.1 && right(r) <= right(line) + h * 0.1 && !across(line, r));
+    const letters = contained.filter((r) => r.equation && /^[A-Z]+$/.test(r.text) &&
+      Math.abs(r.height - h) < h * 0.2 &&
+      baseOf(r) - baseOf(line) >= h * 0.18 && baseOf(r) - baseOf(line) <= h * 0.5);
+    const numerator = contained.some((r) => r.equation && !bar(r) &&
+      baseOf(r) - baseOf(line) >= -h * 1.6 && baseOf(r) - baseOf(line) <= -h * 0.55);
+    if (!letters.length || numerator) continue;
+    letters.sort((a,b) => a.x-b.x);
+    if (letters.some((r,i) => i && r.x-right(letters[i-1]) > h * 0.2) ||
+      Math.abs(letters[0].x-line.x) > h * 0.12 || Math.abs(right(letters[letters.length-1])-right(line)) > h * 0.15) continue;
+    const latex = `\\overline{${words(letters)}}`;
+    fold(line, letters, latex, Math.max(...letters.map(baseOf)), h);
+    events.push({kind:'overline',sourceIds:line.sourceIds,latex});
+  }
+
+  // These annotations are centered on operators, not right-hand scripts.
+  for (const op of active().filter((r) => r.equation && /^(?:lim|Σ|∑)$/.test(r.text))) {
+    const isLimit = op.text === 'lim', h = op.height;
+    const nearby = active().filter((r) => r.id !== op.id && r.equation &&
+      !bar(r) && !radical(r) && r.height >= h * 0.25 && r.height <= h * (isLimit ? 0.75 : 0.55) &&
+      r.x >= op.x - h * 0.55 && right(r) <= right(op) + h * 0.55 && !across(op,r));
+    const row = (above: boolean) => {
+      const list = nearby.filter((r) => {
+        const delta = baseOf(r)-baseOf(op);
+        return above ? delta < -h * 0.5 && delta > -h * 1.2 : delta > h * 0.2 && delta < h * 0.9;
+      }).sort((a,b)=>a.x-b.x);
+      if (!list.length || list.some((r) => Math.abs(baseOf(r)-baseOf(list[0])) > list[0].height * 0.2) ||
+        list.some((r,i) => i && r.x-right(list[i-1]) > list[0].height * 0.4)) return [];
+      return list;
+    };
+    const lower = row(false), upper = isLimit ? [] : row(true);
+    if (!lower.length || (isLimit ? !lower.some((r)=>r.text === '→') : !lower.some((r)=>r.text === '='))) continue;
+    const latex = `${isLimit ? '\\lim' : '\\sum'}_{${words(lower)}}${upper.length ? `^{${words(upper)}}` : ''}`;
+    const textHeight = isLimit ? h / 1.2 : h / 1.8;
+    const baseline = baseOf(op) - (isLimit ? textHeight * 0.1 : textHeight * 0.28);
+    fold(op,[...lower,...upper],latex,baseline,textHeight);
+    events.push({kind:'operatorLimits',sourceIds:op.sourceIds,latex});
+  }
+
+  // Operands enclosed by a bar cannot escape as scripts of an outside base.
+  const operandOwners = (atom: Run) => active().filter((line) => bar(line) && !roofs.has(line.id) &&
+    atom.x >= line.x-line.height*0.15 && right(atom) <= right(line)+line.height*0.2 &&
+    baseOf(atom)-baseOf(line) >= -line.height*1.8 && baseOf(atom)-baseOf(line) <= line.height*0.9)
+    .map((line)=>`${line.id}:${baseOf(atom)<baseOf(line)-line.height*0.3 ? 'above' : 'below'}`).sort().join(',');
 
   // Nuclear left indices require BOTH a superscript and a subscript; isolated
   // small labels to the left never get interpreted as a nuclide automatically.
@@ -238,9 +289,10 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
 
   // Attach smaller right-hand runs to the closest eligible math base. Work on
   // base+script relations before joining baseline runs, preserving CH3OH order.
+  const attachScripts = (compounds = false) => {
   const attachments = new Map<number, { base: Run; sup: Run[]; sub: Run[] }>();
   for (const s of active()) {
-    if (bar(s) || radical(s) || s.latex || !/^[A-Za-z0-9+−-]+$/.test(s.text))
+    if (bar(s) || radical(s) || (s.latex ? !compounds : !/^[A-Za-z0-9+−-]+$/.test(s.text)))
       continue;
     const candidates = active()
       .filter(
@@ -251,16 +303,16 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
           !radical(b) &&
           s.height <= b.height * 0.82 &&
           s.height >= b.height * 0.4 &&
-          /^[A-Za-z0-9]+$/.test(b.text) &&
+          (b.latex ? compounds && !/^\\(?:lim|sum)/.test(b.latex) : /^[A-Za-z0-9]+$/.test(b.text) && b.text !== 'lim') &&
           s.x - right(b) >= -b.height * 0.22 &&
           s.x - right(b) <= b.height * 0.28 &&
-          !across(b, s),
+          !across(b, s) && operandOwners(b) === operandOwners(s),
       )
       .map((b) => ({ b, delta: baseOf(s) - baseOf(b) }))
       .filter(
         ({ b, delta }) =>
           Math.abs(delta) >= b.height * 0.18 &&
-          Math.abs(delta) <= b.height * 0.7,
+          Math.abs(delta) <= b.height * (s.latex ? 1.3 : 0.7),
       )
       .sort((a, b) => Math.abs(s.x - right(a.b)) - Math.abs(s.x - right(b.b)));
     if (!candidates.length) continue;
@@ -320,6 +372,37 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
     fold(base, eligible, latex, baseOf(base), base.height);
     events.push({ kind: 'rightScripts', sourceIds: base.sourceIds, latex });
   }
+  };
+  attachScripts();
+
+  const reduceRadicals = () => {
+  for (const root of items.filter(radical)) {
+    const roof = roofFor.get(root.id);
+    if (!roof || removed.has(roof.id)) continue;
+    const h = roof.height;
+    const inside = active().filter(
+      (r) =>
+        r.id !== root.id &&
+        r.id !== roof.id &&
+        !bar(r) &&
+        !radical(r) &&
+        r.x >= roof.x - h * 0.1 &&
+        right(r) <= right(roof) + h * 0.1 &&
+        baseOf(r) > baseOf(roof) + h * 0.14 &&
+        baseOf(r) < baseOf(root) + h * 0.7 &&
+        !across(root, r),
+    );
+    if (!inside.length) continue;
+    const baseline = inside.reduce((a,b) => a.height >= b.height ? a : b).baseline;
+    // Multi-baseline content not already a fraction is ambiguous: retain it.
+    if (inside.some((r) => Math.abs(baseOf(r) - baseline) > h * 0.3)) continue;
+    const latex = `\\sqrt{${words(inside)}}`;
+    fold(root, [roof, ...inside], latex, baseline, h);
+    events.push({ kind: 'radical', sourceIds: root.sourceIds, latex });
+  }
+
+  };
+  reduceRadicals();
 
   // A verified HyhwpEQ fraction-bar glyph has its text baseline BELOW the
   // actual bar. Its operands occupy baseline bands -1.0em and +0.34em.
@@ -331,6 +414,7 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
       candidates = active().filter(
         (r) =>
           r.id !== line.id &&
+          (r.equation || /[가-힣]/u.test(r.text)) &&
           !bar(r) &&
           !radical(r) &&
           r.x >= line.x - h * 0.15 &&
@@ -371,29 +455,43 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
     events.push({ kind: 'fraction', sourceIds: line.sourceIds, latex });
   }
 
-  for (const root of items.filter(radical)) {
-    const roof = roofFor.get(root.id);
-    if (!roof || removed.has(roof.id)) continue;
-    const h = roof.height;
-    const inside = active().filter(
-      (r) =>
-        r.id !== root.id &&
-        r.id !== roof.id &&
-        !bar(r) &&
-        !radical(r) &&
-        r.x >= roof.x - h * 0.1 &&
-        right(r) <= right(roof) + h * 0.1 &&
-        baseOf(r) > baseOf(roof) + h * 0.14 &&
-        baseOf(r) < baseOf(root) + h * 0.7 &&
-        !across(root, r),
-    );
-    if (!inside.length) continue;
-    const baseline = baseOf(root) - h * 0.32;
-    // Multi-baseline content not already a fraction is ambiguous: retain it.
-    if (inside.some((r) => Math.abs(baseOf(r) - baseline) > h * 0.3)) continue;
-    const latex = `\\sqrt{${words(inside)}}`;
-    fold(root, [roof, ...inside], latex, baseline, h);
-    events.push({ kind: 'radical', sourceIds: root.sourceIds, latex });
+
+  reduceRadicals();
+  attachScripts(true);
+
+  // Tall delimiters have stretched glyph metrics that are not the baseline of
+  // their contents. Pair them first, then retain the contents' baseline; a
+  // raised atom beside the original closing glyph is an outer power.
+  const opening: Record<string,string> = {')':'(',']':'[','}':'{'};
+  for (const close of active().filter((r)=>r.equation && opening[r.text]).sort((a,b)=>a.x-b.x)) {
+    const open = active().filter((r)=>r.equation && r.text===opening[close.text] && r.x<close.x &&
+      Math.abs(r.height-close.height)<close.height*0.18 &&
+      Math.abs(baseOf(r)-baseOf(close))<close.height*0.18 && !across(r,close))
+      .sort((a,b)=>b.x-a.x)[0];
+    if (!open) continue;
+    const glyphHeight=Math.min(open.height,close.height);
+    const inside=active().filter((r)=>r.id!==open.id && r.id!==close.id &&
+      r.x>=right(open)-glyphHeight*0.12 && right(r)<=close.x+glyphHeight*0.12 &&
+      baseOf(r)>Math.min(open.y,close.y)-glyphHeight*0.1 &&
+      r.y<Math.max(baseOf(open),baseOf(close))+glyphHeight*0.2);
+    if (!inside.length || inside.some((r)=>!r.equation || bar(r) || radical(r) || /[⎧⎨⎩⎪]/.test(r.text))) continue;
+    const main=inside.reduce((a,b)=>a.height>=b.height?a:b), h=main.height, baseline=baseOf(main);
+    if (inside.some((r)=>Math.abs(baseOf(r)-baseline)>h*0.2)) continue;
+    const powers=active().filter((r)=>r.id!==close.id && !inside.includes(r) && !r.latex &&
+      /^[A-Za-z0-9+−-]+$/.test(r.text) && r.height<=h*0.82 && r.height>=h*0.4 &&
+      r.x-right(close)>=-h*0.15 && r.x-right(close)<=h*0.28 &&
+      baseOf(close)-baseOf(r)>glyphHeight*0.18 && baseOf(close)-baseOf(r)<glyphHeight*0.8 && !across(close,r));
+    // Two vertically distinct candidates are ambiguous; retain both as atoms.
+    const sup=powers.length && powers.every((r)=>Math.abs(baseOf(r)-baseOf(powers[0]))<h*0.16)?powers:[];
+    const indices=active().filter(r=>r.id!==close.id && !inside.includes(r) && !r.latex &&
+      /^\d+$/.test(r.text) && r.equation && r.height<=h*.82 && r.height>=h*.4 &&
+      r.x-right(close)>=-h*.15 && r.x-right(close)<=h*.28 &&
+      baseOf(r)-baseline>h*.18 && baseOf(r)-baseline<h*.7 && !across(close,r));
+    const sub=indices.length && indices.every(r=>Math.abs(baseOf(r)-baseOf(indices[0]))<h*.16)?indices:[];
+    if(glyphHeight<h*1.15 && !sup.length && !sub.length) continue;
+    const latex=`\\left${expr(open)}${words(inside)}\\right${expr(close)}${sup.length?`^{${words(sup)}}`:''}${sub.length?`_{${words(sub)}}`:''}`;
+    fold(open,[...inside,close,...sup,...sub],latex,baseline,h);
+    events.push({kind:'delimitedExpression',sourceIds:open.sourceIds,latex});
   }
 
   // Compose only confirmed equation atoms in a local baseline neighborhood.
@@ -408,6 +506,8 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
           !bar(current) &&
           !radical(r) &&
           !radical(current) &&
+          !/[⎧⎨⎩⎪]/.test(r.text) &&
+          !/[⎧⎨⎩⎪]/.test(current.text) &&
           Math.abs(baseOf(r) - baseOf(current)) <=
             Math.min(r.height, current.height) * 0.16 &&
           Math.abs(r.height - current.height) <=
@@ -430,24 +530,66 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
     fold(previous, [current], combined, before, h);
     if (!complex) delete previous.latex;
   }
-  for (const r of merged) {
-    if (bar(r) || radical(r))
+  // A cases brace is assembled only from explicit top/middle/bottom glyphs.
+  // Its branches must start next to it and form separate coherent baselines.
+  for (const middle of merged.filter((r)=>r.text==='⎨')) {
+    const h=middle.height;
+    const pieces=merged.filter((r)=>/[⎧⎨⎩⎪]/.test(r.text) &&
+      Math.abs(r.x-middle.x)<h*0.12 && Math.abs(r.width-middle.width)<h*0.2);
+    const top=pieces.filter((r)=>r.text==='⎧' && baseOf(r)<baseOf(middle)).sort((a,b)=>b.y-a.y)[0];
+    const bottom=pieces.filter((r)=>r.text==='⎩' && baseOf(r)>baseOf(middle)).sort((a,b)=>a.y-b.y)[0];
+    if (!top || !bottom || baseOf(bottom)-top.y>h*12) continue;
+    const brace=pieces.filter((r)=>r.y>=top.y-h*0.1 && baseOf(r)<=baseOf(bottom)+h*0.1);
+    const candidates=merged.filter((r)=>!removed.has(r.id) && r.equation && !brace.includes(r) &&
+      r.x>=right(middle)-h*0.1 && baseOf(r)>=top.y && baseOf(r)<=baseOf(bottom)+h*0.2 &&
+      !bar(r) && !radical(r) && !/[⎧⎨⎩⎪]/.test(r.text) && !across(middle,r));
+    const seeds=candidates.filter((r)=>r.x-right(middle)<h*1.25).sort((a,b)=>baseOf(a)-baseOf(b));
+    const rows: Run[][]=[];
+    for (const seed of seeds) {
+      if (rows.some((row)=>row.includes(seed))) continue;
+      const row=[seed];
+      for (const next of candidates.filter((r)=>r.x>seed.x && Math.abs(baseOf(r)-baseOf(seed))<h*0.2).sort((a,b)=>a.x-b.x)) {
+        if (next.x-right(row[row.length-1])>h*2.5) break;
+        row.push(next);
+      }
+      rows.push(row);
+    }
+    if (rows.length<2 || rows.some((row,i)=>i && baseOf(row[0])-baseOf(rows[i-1][0])<h*0.7)) continue;
+    const cuts=rows.map((row)=>{
+      const gaps=row.slice(1).map((r,i)=>({index:i+1,gap:r.x-right(row[i])})).sort((a,b)=>b.gap-a.gap);
+      return gaps[0]?.gap>h*0.8?gaps[0].index:0;
+    });
+    const columns=cuts.every(Boolean) && Math.max(...rows.map((row,i)=>row[cuts[i]].x))-Math.min(...rows.map((row,i)=>row[cuts[i]].x))<h*0.35;
+    const content=rows.map((row,i)=>columns?`${words(row.slice(0,cuts[i]))}&${words(row.slice(cuts[i]))}`:words(row)).join('\\\\');
+    const latex=`\\begin{cases}${content}\\end{cases}`;
+    const baseline=baseOf(middle)+h*0.05;
+    fold(middle,[...brace.filter((r)=>r.id!==middle.id),...rows.flat()],latex,baseline,h);
+    const lhs=merged.filter((r)=>!removed.has(r.id) && r.id!==middle.id && r.equation && /=\s*$/.test(r.latex??r.text) &&
+      middle.x-right(r)>=-h*0.15 && middle.x-right(r)<=h*0.35 && Math.abs(baseOf(r)-baseline)<h*0.2 && !across(r,middle))[0];
+    if (lhs) fold(lhs,[middle],expr(lhs)+latex,baseOf(lhs),lhs.height);
+    events.push({kind:'cases',sourceIds:lhs?.sourceIds??middle.sourceIds,latex:lhs?.latex??latex});
+  }
+  const finalRuns=merged.filter((r)=>!removed.has(r.id));
+  for (const r of finalRuns) {
+    if (bar(r) || radical(r) || /[⎧⎨⎩⎪]/.test(r.text) || /^(lim|Σ|∑)$/.test(r.text))
       warnings.push({
         kind: 'unresolvedMathStructure',
         sourceIds: r.sourceIds,
-        role: r.mathRole,
+        role: r.mathRole ?? (/[⎧⎨⎩⎪]/.test(r.text)?'casesBrace':'operatorLimits'),
         x: r.x,
         y: r.y,
       });
   }
-  const coverage = merged.flatMap((r) => r.sourceIds).sort((a, b) => a - b);
+  const coverage = finalRuns.flatMap((r) => r.sourceIds).sort((a, b) => a - b);
   const sourceConserved =
     coverage.length === input.length && coverage.every((id, i) => id === i);
-  const result = merged
+  const result = finalRuns
     .filter((r) => !(r.vectorSource && r.mathRole))
     .map(({ id: _id, latex, sourceIds: _sourceIds, ...r }) => ({
       ...r,
-      text: latex ? `$${latex}$` : r.text,
+      // Some producers store l/o/g as three glyphs. Promote names only after
+      // those atoms have been joined inside a reconstructed math expression.
+      text: latex ? `$${latex.replace(/(?<![\\A-Za-z])(sin|cos|tan|log|ln)(?![A-Za-z])/g, '\\$1')}$` : r.text,
     }))
     .sort((a, b) => a.y - b.y || a.x - b.x);
   return { items: result, warnings, events, sourceConserved };

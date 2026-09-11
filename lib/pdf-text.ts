@@ -1,6 +1,7 @@
 import type { PageText } from './pdf-layout';
 import type { Rule } from './pdf-structures';
 import { reconstructMathRuns } from './pdf-math-layout';
+import { inferPdfTextStyles } from './pdf-source-formatting';
 
 type TextItem = {
   str: string;
@@ -88,6 +89,8 @@ const verifiedOutlines: Record<string, string> = {
   '496:bc05111:b75fc567':'ᄒᆡ', '668:47cabd9:799a0671':'ᄅᆞᆯ',
   '204:2190d32e:c80f4134':'ᄂᆞ', '402:185b67a1:15912f3':'ᄆᆞᆫ',
   '34:92f9a4f6:697a4d7a':'−',
+  // Filled down arrow, visually checked in the English summary question.
+  '40:758002b2:ef3efa66':'⬇',
   // 2021 science sample outlines, inspected as glyph images. No font is bundled.
   '280:98248289:90ccde63': 'C',
   '278:97201fc:9165c32c': 'F',
@@ -297,9 +300,9 @@ function fontDecoders(
           Array.from(glyph.fontChar).length !== 1
         )
           continue;
-        const proseCharacters: Record<number,string> = {0xf550:'ᄒᆡ',0xe470:'ᄅᆞᆯ',0xe283:'ᄂᆞ',0xe563:'ᄆᆞᆫ',0xf000:'−'};
-        const replacement = (/Haansoft Batang$/i.test(font.name ?? '') ? proseCharacters : equationCharacters)[glyph.unicode.codePointAt(0)!];
-        if (!replacement) continue;
+        const proseCharacters: Record<number,string | string[]> = {0xf550:'ᄒᆡ',0xe470:'ᄅᆞᆯ',0xe283:'ᄂᆞ',0xe563:'ᄆᆞᆫ',0xf000:['−','⬇']};
+        const allowed = (/Haansoft Batang$/i.test(font.name ?? '') ? proseCharacters : equationCharacters)[glyph.unicode.codePointAt(0)!];
+        if (!allowed) continue;
         const code = glyph.fontChar.codePointAt(0)!;
         const cache =
           fingerprints.get(font) ?? new Map<number, string | undefined>();
@@ -307,12 +310,12 @@ function fontDecoders(
         if (!cache.has(code))
           cache.set(code, glyphOutlineFingerprint(font.data, code));
         const fingerprint = cache.get(code);
-        const verified =
-          fingerprint && verifiedOutlines[fingerprint] === replacement;
+        const replacement = fingerprint ? verifiedOutlines[fingerprint] : undefined;
+        const verified = replacement && (Array.isArray(allowed) ? allowed.includes(replacement) : allowed === replacement);
         // A conflicting/unrecognized outline for the same code invalidates it.
-        if (!verified || decoder.get(glyph.unicode) === '')
+        if (!verified || (decoder.has(glyph.unicode) && decoder.get(glyph.unicode) !== replacement))
           decoder.set(glyph.unicode, '');
-        else decoder.set(glyph.unicode, replacement);
+        else decoder.set(glyph.unicode, replacement!);
       }
     }
   }
@@ -425,17 +428,20 @@ export function extractPositionedText(
       width: item.width ?? 0,
     });
   }
-  const math = reconstructMathRuns(positioned, rules);
+  const styled = inferPdfTextStyles(positioned,rules,operators,ops,viewport,getFont);
+  const math = reconstructMathRuns(styled, rules);
   // If a future geometry change violates source conservation, retain the source.
-  const restored = math.sourceConserved ? math.items : positioned;
+  const restored = math.sourceConserved ? math.items : styled;
   return {
     items: restored.map(
-      ({ text, x, y, width, height, mathRole, sourceBounds }) => ({
+      ({ text, x, y, width, height, mathRole, sourceBounds, bold, underline }) => ({
         text,
         x,
         y,
         width,
         height,
+        ...(bold ? {bold} : {}),
+        ...(underline ? {underline} : {}),
         ...(mathRole ? { mathRole } : {}),
         ...(sourceBounds ? { sourceBounds } : {}),
       }),

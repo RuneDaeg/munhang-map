@@ -8,6 +8,8 @@ export type PageText = {
   baseline?: number;
   equation?: boolean;
   fontName?: string;
+  bold?: boolean;
+  underline?: boolean;
   mathRole?: 'fractionBar' | 'radical';
   sourceBounds?: { x: number; y: number; width: number; height: number };
 };
@@ -55,6 +57,8 @@ export type LocatedQuestion = {
   text: string;
   regions: Array<{ page: number; box: CaptureBox }>;
   warning?: string;
+  sharedPassage?: { range: [number, number]; text: string; pages: number[] };
+  sharedRegionCount?: number;
 };
 
 function linesFrom(items: PageText[], column: number): Line[] {
@@ -276,6 +280,28 @@ export function locateQuestions(pages: PageLayout[]): LocatedQuestion[] {
     )
       accepted.push(start);
   }
+  // Register passage regions once for the whole document. Each question keeps
+  // its own assessment region; proximity or a one-page lookback is not ownership.
+  const passages = columns.flatMap((column, ci) => column.lines.flatMap((line, li) => {
+    const range = sharedRange(line.text);
+    if (!range) return [];
+    const first = accepted.find(s => s.columnIndex > ci || (s.columnIndex === ci && s.lineIndex > li));
+    if (!first || first.number < range[0] || first.number > range[1]) return [];
+    const regions: LocatedQuestion['regions'] = [], lines: string[] = [];
+    for (let index = ci; index <= first.columnIndex; index++) {
+      const part = columns[index];
+      const from = index === ci ? li : 0;
+      const to = index === first.columnIndex ? first.lineIndex : part.lines.length;
+      if (to <= from) continue;
+      const top = index === ci ? Math.max(part.top, part.lines[from].y - 4) : part.top;
+      const bottom = index === first.columnIndex ? first.line.y - 5 : part.bottom;
+      if (bottom <= top) continue;
+      regions.push({page:part.page.page,box:[part.left/part.page.width,top/part.page.height,
+        (part.right-part.left)/part.page.width,(bottom-top)/part.page.height]});
+      lines.push(...part.lines.slice(from,to).map(l=>l.text));
+    }
+    return [{ci,li,range,regions,text:lines.join('\n'),pages:[...new Set(regions.map(r=>r.page))]}];
+  }));
   return accepted.map((start, index) => {
     const next = accepted[index + 1];
     const regions: LocatedQuestion['regions'] = [];
@@ -337,59 +363,9 @@ export function locateQuestions(pages: PageLayout[]): LocatedQuestion[] {
       );
       if(nextPassage>=0) break;
     }
-    // A shared passage is repeated with every question that refers to it.
-    let passageStart: { ci: number; li: number } | undefined;
-    for (let ci = 0; ci <= start.columnIndex; ci += 1) {
-      columns[ci].lines.forEach((line, li) => {
-        if (ci === start.columnIndex && li >= start.lineIndex) return;
-        const range = sharedRange(line.text);
-        if (
-          range &&
-          start.number >= range[0] &&
-          start.number <= range[1]
-        )
-          passageStart = { ci, li };
-      });
-    }
-    if (passageStart) {
-      const passage = passageStart as { ci: number; li: number };
-      const first = accepted.find(
-        (item) =>
-          item.columnIndex > passage.ci ||
-          (item.columnIndex === passage.ci && item.lineIndex > passage.li),
-      );
-      if (first && first.columnIndex <= start.columnIndex) {
-        const sharedRegions: LocatedQuestion['regions'] = [];
-        const sharedText: string[] = [];
-        for (let ci = passage.ci; ci <= first.columnIndex; ci += 1) {
-          const column = columns[ci];
-          const from = ci === passage.ci ? passage.li : 0;
-          const to =
-            ci === first.columnIndex ? first.lineIndex : column.lines.length;
-          if (to <= from) continue;
-          const top =
-            ci === passage.ci
-              ? Math.max(column.top, column.lines[from].y - 4)
-              : column.top;
-          const bottom =
-            ci === first.columnIndex ? first.line.y - 5 : column.bottom;
-          sharedRegions.push({
-            page: column.page.page,
-            box: [
-              column.left / column.page.width,
-              top / column.page.height,
-              (column.right - column.left) / column.page.width,
-              (bottom - top) / column.page.height,
-            ],
-          });
-          sharedText.push(
-            ...column.lines.slice(from, to).map((line) => line.text),
-          );
-        }
-        regions.unshift(...sharedRegions);
-        text.unshift(...sharedText);
-      }
-    }
+    const passage = passages.filter(p => start.number >= p.range[0] && start.number <= p.range[1]
+      && (p.ci < start.columnIndex || (p.ci === start.columnIndex && p.li < start.lineIndex))).at(-1);
+    if (passage) { regions.unshift(...passage.regions); text.unshift(passage.text); }
     const warning =
       next && next.number > start.number + 1
         ? `다음 문항 번호가 ${next.number}번으로 이어집니다. 캡처에 누락된 문항이 함께 들어갔는지 확인해 주세요.`
@@ -400,11 +376,15 @@ export function locateQuestions(pages: PageLayout[]): LocatedQuestion[] {
       text: text.join('\n').trim(),
       regions,
       warning,
+      sharedPassage: passage ? {range:passage.range,text:passage.text,pages:passage.pages} : undefined,
+      sharedRegionCount: passage?.regions.length ?? 0,
     };
   });
 }
 
 function sharedRange(text: string) {
   const match = text.match(/^\s*\[\s*(\d{1,2})\s*[~～∼―–-]\s*(\d{1,2})\s*\]/);
-  return match ? [Number(match[1]), Number(match[2])] : undefined;
+  if (!match) return undefined;
+  const from=Number(match[1]),to=Number(match[2]);
+  return from >= 1 && to >= from && to <= 80 ? [from,to] as [number,number] : undefined;
 }

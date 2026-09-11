@@ -98,6 +98,11 @@ export async function enhanceQuestionsWithVision(
       enhanced[index] = {
         ...question,
         text: completion.text,
+        assessmentText: completion.source === 'original' ? question.assessmentText : question.sharedPassage
+          ? [recognized.indirectStem,recognized.directStem,...numberedApiChoices(recognized.choices)].filter(s=>typeof s==='string').join('\n')
+          : completion.text,
+        mappingReason: undefined,
+        validationFlags: undefined,
         // PDF-coordinate captures are authoritative; AI boxes never overwrite them.
         visionEnhanced: completion.source !== 'original' && !countUnresolvedGlyphs(completion.text),
       };

@@ -337,7 +337,7 @@ export function overlayQuestionBoxes(reference: string, structured: string) {
 }
 
 export function questionPlainText(value: string): string {
-  return parseQuestionContent(value)
+  return unformattedText(parseQuestionContent(value)
     .map((block) =>
       block.kind === 'text'
         ? block.text
@@ -354,7 +354,7 @@ export function questionPlainText(value: string): string {
               .filter(Boolean)
               .join('\n'),
     )
-    .join('\n');
+    .join('\n'));
 }
 
 /** Traverse nested containers for validation without flattening the saved source. */

@@ -8,12 +8,13 @@ const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
 const MathText = require('../components/math-text.tsx').default;
 
-test('the shared app footer retains the requested creator credit and notice', () => {
+test('the shared app footer retains the creator credit and the MIT licence notice', () => {
   const source = fs.readFileSync(path.join(__dirname, '../app/page.tsx'), 'utf8');
   const footer = source.match(/<footer\b[^>]*>([\s\S]*?)<\/footer>/)?.[1];
   assert.ok(footer);
   assert.ok(footer.includes('제작자: 여광재(온양고등학교)'));
-  assert.ok(footer.includes('무단 전제 및 복제 금지'));
+  assert.ok(footer.includes('MIT 라이선스'));
+  assert.doesNotMatch(footer, /무단 전제|무단 전재/);
   assert.ok(footer.includes('데이터 출처'));
   assert.ok(footer.includes('HWPX 구현 참고'));
 });

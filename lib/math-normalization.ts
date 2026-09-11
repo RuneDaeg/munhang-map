@@ -1,5 +1,15 @@
 export type MathPart = { text: string; math: boolean; display: boolean };
 
+// Printed money choices use a currency sign, not an opening TeX delimiter.
+// Mask only unambiguous numbered amounts, preserving indices and source text.
+function maskChoiceCurrency(value: string): string {
+  return value.replace(/([①②③④⑤]\s*)\$(\d[\d,]*(?:\.\d+)?)(?=\s*(?:[①②③④⑤]|\n|$))/g,'$1\u0000$2');
+}
+
+export function hasUnbalancedMathDelimiters(value: string): boolean {
+  return (maskChoiceCurrency(value).match(/(?<!\\)\$/g)?.length ?? 0) % 2 !== 0;
+}
+
 // Match complete math spans only. Incomplete input remains editable plain text.
 // Legacy OCR sometimes omitted delimiters around a whole array/table.
 const mathSpans = /(?<!\\)(\$\$[\s\S]+?\$\$|\$(?:\\[^\n]|[^$\n])+?\$|\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]|\\begin\{(array|[bpBvV]?matrix|cases|aligned)\}[\s\S]+?\\end\{\2\})/g;
@@ -16,7 +26,7 @@ const proseSymbols: Record<string, string> = {
 function appendProse(parts: MathPart[], text: string) {
   // Promote only a complete, known argument-taking command to math. Never
   // guess at partial edits or treat an arbitrary backslash command as HTML.
-  const commands = /(?<!\\)\\(frac|dfrac|tfrac|binom|sqrt|vec|hat|overline)(?![A-Za-z])/g;
+  const commands = /(?<!\\)\\(frac|dfrac|tfrac|binom|sqrt|vec|hat|overline|lim|sum|prod|int|sin|cos|tan|log|ln|exp|min|max)(?![A-Za-z])/g;
   let offset = 0;
   for (const match of text.matchAll(commands)) {
     if (match.index < offset) continue;
@@ -27,11 +37,36 @@ function appendProse(parts: MathPart[], text: string) {
       end = close + 1;
     }
     let complete = true;
-    for (let count = /^(?:[dt]?frac|binom)$/.test(match[1]) ? 2 : 1; count > 0; count -= 1) {
+    const arity = /^(?:[dt]?frac|binom)$/.test(match[1]) ? 2 : /^(sqrt|vec|hat|overline)$/.test(match[1]) ? 1 : 0;
+    for (let count = arity; count > 0; count -= 1) {
       while (/\s/.test(text[end] ?? '') && end < text.length) end += 1;
       const close = text[end] === '{' ? closingBrace(text, end) : -1;
       if (close < 0) { complete = false; break; }
       end = close + 1;
+    }
+    // Complete operator scripts are self-contained math even if the following
+    // operand is prose. Do not consume an unbounded stretch of the sentence.
+    const scripts = new Set<string>();
+    while (complete) {
+      let cursor = end;
+      while (cursor < text.length && /\s/.test(text[cursor])) cursor++;
+      const script = text[cursor];
+      if (script !== '^' && script !== '_') break;
+      if (scripts.has(script)) { complete = false; break; }
+      scripts.add(script);
+      cursor++;
+      while (cursor < text.length && /\s/.test(text[cursor])) cursor++;
+      if (text[cursor] === '{') {
+        const close = closingBrace(text, cursor);
+        if (close < 0 || close === cursor + 1) { complete = false; break; }
+        end = close + 1;
+      } else if (/^[A-Za-z0-9α-ωΑ-Ω+−-]$/u.test(text[cursor] ?? '')) {
+        end = cursor + 1;
+      } else {
+        const symbol = /^\\(?:alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|omega|infty)(?![A-Za-z])/.exec(text.slice(cursor));
+        if (!symbol) { complete = false; break; }
+        end = cursor + symbol[0].length;
+      }
     }
     if (!complete) continue;
     if (match.index > offset) parts.push({ text: text.slice(offset, match.index), math: false, display: false });
@@ -44,9 +79,9 @@ function appendProse(parts: MathPart[], text: string) {
 export function splitMathText(value: string): MathPart[] {
   const parts: MathPart[] = [];
   let offset = 0;
-  for (const match of value.matchAll(mathSpans)) {
+  for (const match of maskChoiceCurrency(value).matchAll(mathSpans)) {
     if (match.index > offset) appendProse(parts, value.slice(offset, match.index));
-    const span = match[0];
+    const span = value.slice(match.index, match.index + match[0].length);
     const environment = span.startsWith('\\begin');
     const display = environment || span.startsWith('$$') || span.startsWith('\\[');
     const width = display || span.startsWith('\\(') ? 2 : 1;

@@ -13,7 +13,9 @@ function MathParts({ text }: { text: string }) {
     <>
       {parts.map((part, index) => {
         if (!part.math) return <span key={index}>{part.text}</span>;
-        const { text: expression, display: displayMode } = part;
+        const { display: displayMode } = part;
+        // Exam operators place limits above/below even inside a Korean sentence.
+        const expression=part.text.replace(/\\(lim|sum|prod)(?![A-Za-z]|\s*\\limits)/g,'\\$1\\limits');
         const html = katex.renderToString(expression, { displayMode, throwOnError: false, strict: false, trust: false, output: 'html' });
         return displayMode
           ? <span key={`${index}-${expression}`} className="my-2 block overflow-x-auto" dangerouslySetInnerHTML={{ __html: html }} />

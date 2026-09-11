@@ -5,12 +5,17 @@ import type { PDFPageProxy } from 'pdfjs-dist';
 import { pdfRules, structureQuestionRegion, type Rule } from './pdf-structures';
 import { countUnresolvedGlyphs, extractPositionedText } from './pdf-text';
 import { pdfImageAreas, locateVisualChoices, type PdfImageArea } from './pdf-visual-choices';
+import type { ValidationFlag } from './question-validation';
+import { mapAssessment } from './assessment-mapping';
+import { imageTextStructures } from './pdf-raster-structures';
+import type { PdfStructure } from './pdf-structures';
 
 export type StandardCandidate = {
   code: string;
   standard: string;
   domain: string;
   confidence: number;
+  reason?: string;
 };
 
 export type SubjectCandidate = {
@@ -41,6 +46,11 @@ export type AnalyzedQuestion = {
   examSubject?: ExamSubject;
   selectedSubjectKey?: string;
   sourceFileName?: string;
+  assessmentText?: string;
+  sharedPassage?: {range:[number,number];text:string;pages:number[]};
+  mappingArea?: string;
+  mappingReason?: string;
+  validationFlags?: ValidationFlag[];
 };
 
 // The curriculum catalogue is the pinned worksheet-grab dataset documented in
@@ -82,7 +92,7 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
   // PDF.js otherwise releases font.data immediately after binding the font.
   const pdf = await pdfjs.getDocument({ data: source, fontExtraProperties: true }).promise;
   const pages: PageLayout[] = [];
-  const geometry: Array<{ items: PageText[]; rules: Rule[]; images:PdfImageArea[]; mathWarnings:Array<{x:number;y:number}> }> = [];
+  const geometry: Array<{ items: PageText[]; rules: Rule[]; images:PdfImageArea[]; rasterStructures:PdfStructure[]; mathWarnings:Array<{x:number;y:number}> }> = [];
   const pageImages: string[] = [];
   try {
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
@@ -93,7 +103,9 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
     const { items: positioned, mathWarnings } = extractPositionedText(content.items, viewport.transform, operators, pdfjs.OPS, (id) => page.commonObjs.get(id), rules);
     const layout=layoutPage(positioned, viewport.width, viewport.height, pageNumber);
     pages.push(layout);
-    geometry.push({items:layout.bodyItems,rules,images:pdfImageAreas(operators,pdfjs.OPS,viewport.transform),mathWarnings});
+    const images=pdfImageAreas(operators,pdfjs.OPS,viewport.transform);
+    const rasterStructures=await imageTextStructures(pageImage,viewport.width,viewport.height,images,layout.bodyItems);
+    geometry.push({items:layout.bodyItems,rules,images,rasterStructures,mathWarnings});
     pageImages.push(pageImage);
     page.cleanup();
     onProgress?.(pageNumber, pdf.numPages);
@@ -132,13 +144,18 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
     if(visualChoices.length) warnings.push('그림형 선택지는 셀 배치와 빗금을 원본 이미지로 보존했습니다. 아래 선택지 캡처를 기준으로 확인하세요.');
     const structuredRegions = chunk.regions.map(region => {
       const source = geometry[region.page-1], page = pages[region.page-1];
-      return structureQuestionRegion(source.items,source.rules,region.box,page.width,page.height);
+      return structureQuestionRegion(source.items,source.rules,region.box,page.width,page.height,source.rasterStructures);
     });
     const structuredText = structuredRegions.map(region=>region.text).join('\n').replace(new RegExp(`^\\s*${chunk.number}\\s*[.)]\\s*`),'') || chunk.text;
+    const assessmentText = structuredRegions.slice(chunk.sharedRegionCount ?? 0).map(region=>region.text).join('\n')
+      .replace(new RegExp(`^\\s*${chunk.number}\\s*[.)]\\s*`),'');
     questions.push(classifyQuestion({
       number: chunk.number,
       type: `자동 추출 문항 · ${chunk.page}쪽`,
       text: structuredText,
+      assessmentText,
+      sharedPassage: chunk.sharedPassage ? {...chunk.sharedPassage,
+        text:structuredRegions.slice(0,chunk.sharedRegionCount).map(region=>region.text).join('\n')} : undefined,
       standardCode: '', standard: '', confidence: 0, domain: '',
       sourcePageImage: pageImages[chunk.page - 1],
       questionCaptures,
@@ -173,6 +190,16 @@ async function renderPageCapture(page: PDFPageProxy) {
 }
 
 export function classifyQuestion(question: AnalyzedQuestion, catalog: StandardRecord[], subjectKey?: string): AnalyzedQuestion {
+  const assessment = mapAssessment(question,catalog,subjectKey);
+  if(assessment) {
+    const standardCandidates=assessment.candidates.map(c=>({code:c.code,standard:c.standard,domain:c.domain,reason:c.reason,confidence:0}));
+    const subjectCandidates=[...new Map(assessment.candidates.map(c=>[c.subjectKey,{key:c.subjectKey,label:c.domain,confidence:0}])).values()];
+    const best=standardCandidates[0];
+    return {...question,selectedSubjectKey:subjectKey ?? question.selectedSubjectKey,
+      standardCode:best?.code ?? '',standard:best?.standard ?? '해당 없음 · 평가 요소와 교과를 확인해 주세요.',
+      domain:best?.domain ?? question.examSubject?.label ?? question.domain,confidence:0,
+      standardCandidates,subjectCandidates,mappingArea:assessment.areaLabel,mappingReason:assessment.reason};
+  }
   const selectedSubjectKey = subjectKey ?? question.selectedSubjectKey;
   const contextKeys = question.examSubject?.subjectKeys;
   const scopedCatalog = contextKeys?.length ? catalog.filter((item) => contextKeys.includes(`${item.school}|${item.subject}`) || `${item.school}|${item.subject}` === selectedSubjectKey) : catalog;
@@ -196,8 +223,7 @@ export function classifyQuestion(question: AnalyzedQuestion, catalog: StandardRe
     confidence: scoreToConfidence(score),
   }));
   const best = standardCandidates[0];
-  if (!best) return question;
-  return { ...question, selectedSubjectKey, standardCode: best.code, standard: best.standard, confidence: best.confidence, domain: best.domain, standardCandidates, subjectCandidates };
+  return { ...question, selectedSubjectKey, standardCode: best?.code ?? '', standard: best?.standard ?? '해당 없음 · 교과를 확인해 주세요.', confidence: best?.confidence ?? 0, domain: best?.domain ?? '', standardCandidates, subjectCandidates, mappingArea:undefined, mappingReason:undefined, validationFlags:undefined };
 }
 
 export function splitIntoQuestions(pages: string[][]): QuestionChunk[] {

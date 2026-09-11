@@ -12,6 +12,19 @@ const question = { number: 1, type: 'test', text: '원문', standardCode: '[12�
 const input = (fileName = 'exam.pdf', questions = [question]) => ({ sourceFileName: fileName, sourceFingerprint: 'a'.repeat(64), questions, apiKey: 'must-not-save' });
 function fixture(t) { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'munhang-bank-test-')); t.after(() => fs.rmSync(root, { recursive: true, force: true })); return root; }
 
+test('shared passage, own assessment and validation reasons survive bank and review round trips',async(t)=>{
+  const root=fixture(t),context={assessmentText:'1. 개별 발문?',sharedPassage:{range:[1,3],text:'공유 지문',pages:[1]},mappingArea:'읽기',mappingReason:'발문 근거',validationFlags:[{code:'code_overused',message:'대조 필요'}]};
+  createQuestionBank(root).save(input('context.pdf',[{...question,...context}]));
+  const bank=createQuestionBank(root),restored=bank.select(bank.list().map(i=>i.id))[0];
+  const {serializeReview,parseReview}=require('../lib/review-file.ts');
+  const oldImage=global.Image,oldDocument=global.document;
+  t.after(()=>{global.Image=oldImage;global.document=oldDocument;});
+  global.Image=class {naturalWidth=100;naturalHeight=100;set src(value){queueMicrotask(()=>this.onload());}};
+  global.document={createElement:()=>({getContext:()=>({drawImage(){}}),toDataURL:()=>image})};
+  const review=await parseReview(serializeReview('context.pdf',[restored],[image]));
+  for(const key of Object.keys(context))assert.deepEqual(review.questions[0][key],context[key]);
+});
+
 test('disk persistence survives restarts; repeated saves update and two PDFs keep the same question number', (t) => {
   const root = fixture(t);
   let bank = createQuestionBank(root);

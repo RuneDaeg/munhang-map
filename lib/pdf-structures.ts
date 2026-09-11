@@ -1,6 +1,7 @@
 import type { CaptureBox, PageText } from './pdf-layout';
 import { questionTextFromBlocks } from './question-content';
 import { detectChoicePanels, detectDialogue } from './pdf-reading-order';
+import { styledItemText, detectRangeBrackets } from './pdf-source-formatting';
 
 export type Rule = { x1: number; y1: number; x2: number; y2: number };
 type Matrix = number[];
@@ -13,6 +14,7 @@ export type PdfStructure = Area & {
   header: boolean;
   sourceItems?: PageText[];
   orderY?: number;
+  inline?: boolean;
 };
 const mul = (a: Matrix, b: Matrix) => [
   a[0] * b[0] + a[2] * b[1],
@@ -156,7 +158,7 @@ function rowsOf(items: PageText[]) {
 }
 const textOf = (items: PageText[]) =>
   rowsOf(items)
-    .map((row) => row.map((item) => item.text).join(' '))
+    .map((row) => row.map(styledItemText).join(' '))
     .join('\n');
 const inside = (item: PageText, area: Area, pad = 0) =>
   item.x + item.width / 2 >= area.x - pad &&
@@ -234,6 +236,16 @@ export function detectPdfStructures(
       width: xs.at(-1)! - xs[0],
       height: bottom - top,
     };
+    // A merged header often omits a separator only in its first band. Retain
+    // that separator for the data columns, but don't borrow an unrelated
+    // nested table's edges from the middle of an enclosing material box.
+    for (const line of vertical) {
+      if (line.x1 <= area.x + 2 || line.x1 >= area.x + area.width - 2) continue;
+      if (Math.abs(line.y2 - bottom) > 2 || line.y1 < top - 2 || line.y2 - line.y1 < area.height * .5) continue;
+      if (covered(rules, line.y1, area.x, area.x + area.width) < .15) continue;
+      if (!xs.some(x => Math.abs(x - line.x1) < 2)) xs.push(line.x1);
+    }
+    xs.sort((a,b) => a-b);
     const content = items.filter((i) => inside(i, area));
     const ys = unique([
       top,
@@ -257,14 +269,26 @@ export function detectPdfStructures(
       const rows = ys.slice(0, -1).map((y, r) =>
         xs.slice(0, -1).map((x, c) =>
           textOf(
-            content.filter((i) =>
-              inside(i, {
+            content.filter((i) => {
+              if (r === 0 && inside(i, {...area, y, height:ys[r+1]-y})) {
+                // Flatten a multi-level heading to one label per leaf column.
+                // The parent label belongs to every child under the missing
+                // separator (e.g. '주차율 평일' / '주차율 주말').
+                const cy = i.y + i.height / 2;
+                const dividers = vertical.filter(v => v.y1 <= cy + 1 && v.y2 >= cy - 1 && xs.some(x=>Math.abs(x-v.x1)<2))
+                  .map(v => v.x1).filter(v => v >= area.x - 2 && v <= area.x + area.width + 2);
+                const cx = i.x + i.width / 2;
+                const left = Math.max(area.x, ...dividers.filter(v => v < cx));
+                const right = Math.min(area.x + area.width, ...dividers.filter(v => v > cx));
+                return (x + xs[c+1]) / 2 > left - 1 && (x + xs[c+1]) / 2 < right + 1;
+              }
+              return inside(i, {
                 x,
                 y,
                 width: xs[c + 1] - x,
                 height: ys[r + 1] - y,
-              }),
-            ),
+              });
+            }),
           ).replace(/\n/g, ' '),
         ),
       );
@@ -320,7 +344,9 @@ export function detectPdfStructures(
       const prose =
         /[가-힣]{2}/.test(text) ||
         (text.match(/[A-Za-z]{2,}/g)?.length ?? 0) >= 7;
-      if (text.replace(/\s/g, '').length >= 30 && prose)
+      const compactPhrase = /[가-힣]{2}/.test(text) && content.length > 0 &&
+        area.height <= Math.max(...content.map(i=>i.height)) * 2.4;
+      if ((text.replace(/\s/g, '').length >= 30 || compactPhrase) && prose)
         found.push({
           ...area,
           kind: 'box',
@@ -328,6 +354,7 @@ export function detectPdfStructures(
           title: isView ? '<보기>' : '',
           rows: [],
           header: false,
+          inline: compactPhrase,
         });
     }
   }
@@ -421,7 +448,7 @@ export function detectChoiceTable(items: PageText[]): PdfStructure | undefined {
     cells.every((row) => /^[.…⋯·]+$/.test(textOf(row[c]).replace(/\s/g, '')));
   const hasHeader =
     headers.slice(1).filter(Boolean).length >= 2 &&
-    headers.slice(1).every((cell, i) => cell.length >= 2 || connector(i + 1));
+    headers.slice(1).every((cell, i) => cell.length >= 2 || /^[㉠-㉻ⓐ-ⓩA-Z]$/.test(cell.trim()) || connector(i + 1));
   if (!hasHeader) return; // No invented or arbitrarily cropped heading row.
   const top = Math.min(
     ...preceding
@@ -452,6 +479,7 @@ export function structureQuestionRegion(
   box: CaptureBox,
   width: number,
   height: number,
+  imageStructures: PdfStructure[] = [],
 ) {
   const area = {
     x: box[0] * width,
@@ -468,9 +496,14 @@ export function structureQuestionRegion(
       s.y + s.height <= area.y + area.height + 2,
   );
   const choice = detectChoiceTable(selected) ?? detectChoicePanels(selected);
+  for(const s of imageStructures) {
+    if(s.x>=area.x-2 && s.y>=area.y-2 && s.x+s.width<=area.x+area.width+2 && s.y+s.height<=area.y+area.height+2
+      && !structures.some(v=>Math.abs(v.x-s.x)<3 && Math.abs(v.y-s.y)<3 && Math.abs(v.width-s.width)<6 && Math.abs(v.height-s.height)<6)) structures.push(s);
+  }
   if (choice && !structures.some((s) => inside(choice, s)))
     structures.push(choice);
   structures.push(...detectDialogue(selected));
+  structures.push(...detectRangeBrackets(selected,rules));
   // If a structure cannot be serialized, keep every source item as plain text.
   const accepted = structures.filter(
     (s) => questionTextFromBlocks([s]) !== undefined,
@@ -520,8 +553,20 @@ export function structureQuestionRegion(
         };
       });
     const outside = content.filter((i) => !children.some((s) => owns(s, i)));
+    const outsideRows = rowsOf(outside).flatMap(row=>{
+      const small=children.filter(s=>s.inline && row.some(i=>i.y+i.height/2>=s.y && i.y+i.height/2<=s.y+s.height));
+      for(const s of small) {
+        const event=events.find(e=>e.x===s.x && e.y===s.y);
+        if(event) event.orderY=row[0].y;
+      }
+      if(!small.length) return [row];
+      const cuts=small.map(s=>s.x+s.width/2).sort((a,b)=>a-b);
+      const groups:PageText[][]=Array.from({length:cuts.length+1},()=>[]);
+      for(const item of row) groups[cuts.filter(x=>item.x>x).length].push(item);
+      return groups.filter(g=>g.length);
+    });
     events.push(
-      ...rowsOf(outside).map((row) => ({
+      ...outsideRows.map((row) => ({
         x: Math.min(...row.map((i) => i.x)),
         y: Math.min(...row.map((i) => i.y)),
         width:
@@ -551,7 +596,7 @@ export function structureQuestionRegion(
           e.y + e.height > child.y - 2 &&
           (e.x + e.width < child.x || e.x > child.x + child.width),
       );
-      if (beside.length >= 2) {
+      if (!child.inline && beside.length >= 2) {
         const e = events[at];
         events.splice(at, 1);
         const last = Math.max(...beside.map((line) => events.indexOf(line)));

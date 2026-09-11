@@ -2,6 +2,7 @@
 
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { splitFormattedText } from '@/lib/text-formatting';
+import { validateExamQuestions } from '@/lib/question-validation';
 import {
   ArrowRight,
   Check,
@@ -103,6 +104,7 @@ export default function Home() {
   const [analysisProgress, setAnalysisProgress] = useState(0);
   const [isDemo, setIsDemo] = useState(true);
   const [standards, setStandards] = useState<StandardRecord[]>([]);
+  const checkedQuestions = useMemo(()=>validateExamQuestions(questionData,standards.length ? standards : undefined),[questionData,standards]);
   const [visionAvailable, setVisionAvailable] = useState(false);
   const [visionModel, setVisionModel] = useState('');
   const [visionProvider, setVisionProvider] = useState('');
@@ -152,10 +154,10 @@ export default function Home() {
       await context.registerTool({
         name: 'get_exam_analysis_summary',
         title: '시험지 분석 요약 조회',
-        description: '현재 화면의 PDF 이름, 문항 수, 성취기준 수와 평균 신뢰도를 조회합니다.',
+        description: '현재 화면의 PDF 이름, 문항 수, 성취기준 수와 자동 검토 항목 수를 조회합니다. 정확도는 아닙니다.',
         inputSchema: { type: 'object', properties: {}, additionalProperties: false },
         annotations: { readOnlyHint: true, untrustedContentHint: true },
-        execute: () => ({ fileName, questionCount: questionData.length, standardCount: new Set(questionData.map((q) => q.standardCode)).size, averageConfidence: average(questionData) }),
+        execute: () => ({ fileName, questionCount: checkedQuestions.length, standardCount: new Set(checkedQuestions.map((q) => q.standardCode).filter(Boolean)).size, reviewQuestionCount: checkedQuestions.filter(q=>q.validationFlags?.length).length }),
       }, { signal: lifecycle.signal });
       await context.registerTool({
         name: 'select_exam_question',
@@ -174,7 +176,7 @@ export default function Home() {
     };
     void register().catch(() => undefined);
     return () => lifecycle.abort();
-  }, [fileName, questionData]);
+  }, [fileName, questionData, checkedQuestions]);
 
   async function handleFile(file: File) {
     if (operationRef.current || recognizingQuestion !== null || savingBank) return;
@@ -201,14 +203,14 @@ export default function Home() {
     if (status !== 'ready' || recognizingQuestion !== null || savingBank || isDemo) return;
     setSavingBank(true); setBankMessage('');
     try {
-      const result = await saveToQuestionBank(fileName, questionData, sourcePages);
+      const result = await saveToQuestionBank(fileName, checkedQuestions, sourcePages);
       setBankMessage(`${result.saved}문항을 내 문제함에 ${result.updated ? '업데이트' : '저장'}했습니다. 다른 PDF의 문항과 함께 선택해 내보낼 수 있습니다.`);
     } catch (reason) { setBankMessage(reason instanceof Error ? reason.message : '문제함에 저장하지 못했습니다.'); }
     finally { setSavingBank(false); }
   }
 
   function updateSelectedText(text: string) {
-    setQuestionData((current) => current.map((question, index) => index === selected ? { ...question, text, textEdited:true, visionEnhanced: false } : question));
+    setQuestionData((current) => current.map((question, index) => index === selected ? { ...question, text, assessmentText:undefined, mappingReason:undefined, validationFlags:undefined, textEdited:true, visionEnhanced: false } : question));
   }
 
   async function handleReviewFile(file: File) {
@@ -245,6 +247,7 @@ export default function Home() {
       standard: candidate.standard,
       domain: candidate.domain,
       confidence: candidate.confidence,
+      mappingReason: candidate.reason ?? '사용자가 성취기준을 직접 선택했습니다.',
     } : question));
   }
 
@@ -290,7 +293,8 @@ export default function Home() {
     let secondText = right.trim();
     const marker = secondText.match(/^(\d{1,2})\s*[.)]\s*/);
     const secondNumber = marker ? Number(marker[1]) : question.number + 1;
-    if (marker) secondText = secondText.slice(marker[0].length).trim();
+    // Keep the own-question anchor after a manual split of a shared passage.
+    if (!marker) secondText = `${secondNumber}. ${secondText}`;
     const captureWarning = '텍스트를 수동으로 나눴습니다. 캡처에는 분리 전 영역이 보존되어 있으므로 범위를 확인해 주세요.';
     const first = classifyQuestion({ ...question, text: firstText, captureWarning, captureReviewed: false, textEdited:true, visualChoices:undefined, analysisWarning:undefined, figureImage: undefined, visionEnhanced: false }, standards);
     const second = classifyQuestion({ ...question, number: secondNumber, text: secondText, captureWarning, captureReviewed: false, textEdited:true, visualChoices:undefined, analysisWarning:undefined, figureImage: undefined, visionEnhanced: false, type: question.type.replace('자동 추출', '수동 분리') }, standards);
@@ -309,8 +313,8 @@ export default function Home() {
   }
 
   const standardCount = new Set(questionData.map((question) => question.standardCode)).size;
-  const highConfidence = questionData.filter((question) => question.confidence >= 85).length;
-  const needsReview = questionData.length - highConfidence;
+  const needsReview = checkedQuestions.filter(question=>question.validationFlags?.length).length;
+  const noFlags = checkedQuestions.length - needsReview;
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -385,13 +389,13 @@ export default function Home() {
 
           <div className="mt-7 border-t border-white/10 pt-5">
             <div className="flex items-center justify-between text-xs">
-              <span className="text-white/55">검토 완료</span>
-              <strong className="text-accent">{highConfidence} / {questionData.length}</strong>
+              <span className="text-white/55">자동 경고 없음 · 정확도 보증 아님</span>
+              <strong className="text-accent">{noFlags} / {questionData.length}</strong>
             </div>
-            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-accent transition-all" style={{ width: `${questionData.length ? (highConfidence / questionData.length) * 100 : 0}%` }} /></div>
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-accent transition-all" style={{ width: `${questionData.length ? (noFlags / questionData.length) * 100 : 0}%` }} /></div>
             <div className="mt-4 grid grid-cols-2 gap-2">
               <div className="rounded-xl bg-white/6 p-3"><p className="text-xl font-bold">{standardCount}</p><p className="text-[11px] text-white/45">성취기준</p></div>
-              <div className="rounded-xl bg-white/6 p-3"><p className="text-xl font-bold">{average(questionData)}%</p><p className="text-[11px] text-white/45">평균 신뢰도</p></div>
+              <div className="rounded-xl bg-white/6 p-3"><p className="text-xl font-bold">{needsReview}</p><p className="text-[11px] text-white/45">자동 검토 항목이 있는 문항</p></div>
             </div>
           </div>
 
@@ -415,7 +419,7 @@ export default function Home() {
               <div className="flex flex-wrap gap-2">
                 <Button variant="outline" disabled={busy} onClick={() => inputRef.current?.click()}><Upload /> PDF 바꾸기</Button>
                 <Button variant="outline" onClick={() => reviewInputRef.current?.click()} disabled={busy}>검토 파일 열기</Button>
-                <Button variant="outline" onClick={() => downloadReview(fileName, questionData, sourcePages)} disabled={busy || !sourcePages.length}>검토 저장</Button>
+                <Button variant="outline" onClick={() => downloadReview(fileName, checkedQuestions, sourcePages)} disabled={busy || !sourcePages.length}>검토 저장</Button>
                 <Button variant="outline" onClick={() => void saveCurrentToBank()} disabled={busy || isDemo || status !== 'ready' || !sourcePages.length || !questionData.length}>{savingBank ? <LoaderCircle className="animate-spin" /> : <FolderOpen />}{savingBank ? '문제함 저장 중…' : '문제함에 저장'}</Button>
                 <Button onClick={() => setExportOpen(true)} disabled={busy || !questionData.length} className="bg-primary px-4 text-primary-foreground hover:bg-primary/90"><Download /> 문서 내보내기</Button>
               </div>
@@ -428,7 +432,7 @@ export default function Home() {
                   <TabsTrigger value="standards" className="px-3"><ListFilter /> 성취기준별 보기</TabsTrigger>
                 </TabsList>
                 <div className="flex items-center gap-2 pb-3 sm:pb-0">
-                  <Badge variant="secondary" className="bg-emerald-50 text-emerald-700">높은 신뢰도 {highConfidence}</Badge>
+                  <Badge variant="secondary" className="bg-emerald-50 text-emerald-700">자동 경고 없음 {noFlags}</Badge>
                   <Badge variant="secondary" className="bg-amber-50 text-amber-700">확인 필요 {needsReview}</Badge>
                 </div>
               </div>
@@ -450,7 +454,7 @@ export default function Home() {
                           </EmptyHeader>
                         </Empty>
                       )}
-                      {questionData.map((question, index) => (
+                      {checkedQuestions.map((question, index) => (
                         <button key={`${question.number}-${index}`} onClick={() => setSelected(index)} className={`group grid w-full grid-cols-[48px_minmax(0,1fr)] gap-3 p-4 text-left transition sm:grid-cols-[54px_minmax(0,1fr)_auto] ${selected === index ? 'bg-selected' : 'hover:bg-muted/50'}`}>
                           <span className={`grid size-11 place-items-center rounded-2xl text-lg font-extrabold ${selected === index ? 'bg-primary text-white' : 'bg-muted text-foreground'}`}>{String(question.number).padStart(2, '0')}</span>
                           <span className="min-w-0">
@@ -458,8 +462,8 @@ export default function Home() {
                             <span className="mt-2 line-clamp-2 block text-[15px] font-medium leading-6"><Suspense fallback={normalizeQuestionText(question.text)}><MathText text={question.text} compact /></Suspense></span>
                           </span>
                           <span className="col-start-2 flex items-center gap-2 self-center sm:col-start-auto">
-                            <span className={`size-2 rounded-full ${question.confidence >= 85 ? 'bg-emerald-500' : 'bg-amber-400'}`} />
-                            <span title="성취기준 일치율 · 문자 인식 정확도가 아닙니다" className="text-xs font-semibold tabular-nums text-muted-foreground">{question.confidence}%</span>
+                            <span className={`size-2 rounded-full ${question.validationFlags?.length ? 'bg-amber-400' : 'bg-emerald-500'}`} />
+                            <span title="코드로 검사한 항목이며 경고가 없어도 원문 대조는 필요합니다" className="text-xs font-semibold tabular-nums text-muted-foreground">{question.validationFlags?.length ? `검토 ${question.validationFlags.length}건` : '경고 없음'}</span>
                             <ArrowRight className="size-4 text-muted-foreground transition group-hover:translate-x-0.5" />
                           </span>
                         </button>
@@ -468,7 +472,7 @@ export default function Home() {
                     <div className="border-t bg-muted/35 px-4 py-3 text-center text-xs text-muted-foreground">문항 텍스트와 추천 성취기준은 내보내기 전에 직접 수정할 수 있습니다</div>
                   </div>
 
-                  {questionData[selected] && <QuestionInspector key={`${fileName}-${selected}`} question={questionData[selected]} catalog={standards} canMerge={selected > 0} recognizing={recognizingQuestion === questionData[selected].number} canEditCapture={!busy && sourcePages.length > 0} onEditCapture={() => setEditingCapture(selected)} onTextChange={updateSelectedText} onStandardChange={updateSelectedStandard} onSubjectChange={updateSelectedSubject} onRefresh={refreshSelectedCandidates} onRecognize={() => void recognizeSelectedQuestion()} onSplit={splitSelectedQuestion} onMerge={mergeWithPrevious} />}
+                  {checkedQuestions[selected] && <QuestionInspector key={`${fileName}-${selected}`} question={checkedQuestions[selected]} catalog={standards} canMerge={selected > 0} recognizing={recognizingQuestion === checkedQuestions[selected].number} canEditCapture={!busy && sourcePages.length > 0} onEditCapture={() => setEditingCapture(selected)} onTextChange={updateSelectedText} onStandardChange={updateSelectedStandard} onSubjectChange={updateSelectedSubject} onRefresh={refreshSelectedCandidates} onRecognize={() => void recognizeSelectedQuestion()} onSplit={splitSelectedQuestion} onMerge={mergeWithPrevious} />}
                 </div>
               </TabsContent>
 
@@ -476,7 +480,7 @@ export default function Home() {
                 <div className="grid gap-3 md:grid-cols-2">
                   {questionData.map((question) => (
                     <article key={`${question.standardCode}-${question.number}`} className="rounded-2xl border bg-background p-5">
-                      <div className="flex items-start justify-between gap-3"><Badge className="bg-primary/10 text-primary">{question.standardCode}</Badge><span className="text-xs font-semibold text-muted-foreground">{question.confidence}% 일치</span></div>
+                      <div className="flex items-start justify-between gap-3"><Badge className="bg-primary/10 text-primary">{question.standardCode || '해당 없음'}</Badge><span className="text-xs font-semibold text-muted-foreground">검토용 추천</span></div>
                       <h2 className="mt-4 font-bold">{question.domain}</h2>
                       <p className="mt-2 text-sm leading-6 text-muted-foreground">{question.standard}</p>
                       <p className="mt-4 text-xs font-semibold text-primary">연결 문항 {question.number}번</p>
@@ -492,7 +496,7 @@ export default function Home() {
       {bankOpen && <QuestionBank onClose={() => setBankOpen(false)} />}
       {editingCapture !== null && questionData[editingCapture] && <CaptureEditor key={editingCapture} question={questionData[editingCapture]} sourcePages={sourcePages} onClose={() => setEditingCapture(null)} onSave={saveCaptureEdits} />}
       <footer className="mx-auto flex max-w-[1540px] flex-col gap-2 px-6 pb-8 text-xs leading-5 text-muted-foreground sm:flex-row sm:justify-between">
-        <span className="text-sm font-medium">제작자: 여광재(온양고등학교)<br />무단 전제 및 복제 금지</span>
+        <span className="text-sm font-medium">제작자: 여광재(온양고등학교)<br /><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/RuneDaeg/munhang-map/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT 라이선스</a></span>
         <span>성취기준 데이터: worksheet-grab · 2022 개정 교육과정</span>
         <span className="flex flex-wrap gap-x-4"><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/pblsketch/worksheet-grab/tree/090e24e331f779a2e329cf686c5c5444f9221ca9/data" target="_blank" rel="noreferrer">데이터 출처</a><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/jkf87/hwpx-skill" target="_blank" rel="noreferrer">HWPX 구현 참고</a><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/KaTeX/KaTeX" target="_blank" rel="noreferrer">KaTeX</a></span>
       </footer>
@@ -548,6 +552,8 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canEditCa
         {question.examSubject && <p className="mb-3 rounded-lg bg-primary/5 px-3 py-2 text-sm text-primary">{question.examSubject.page}쪽 머리말에서 ‘{question.examSubject.label}’ 감지 · {question.selectedSubjectKey ? '직접 선택한 교과를 우선 반영' : '관련 교과 안에서 성취기준 추천'}</p>}
         {question.captureWarning && <output className="mb-3 block rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{question.captureWarning}</output>}
         {question.analysisWarning && <output className="mb-3 block rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{question.analysisWarning}</output>}
+        {question.mappingReason && <p className="mb-3 rounded-lg bg-primary/5 px-3 py-2 text-sm">{question.mappingArea && <strong>{question.mappingArea} · </strong>}{question.mappingReason}</p>}
+        {!!question.validationFlags?.length && <details className="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900"><summary className="cursor-pointer font-medium">자동 검토 항목 {question.validationFlags.length}건</summary><ul className="mt-2 list-disc space-y-1 pl-5">{question.validationFlags.map(flag=><li key={flag.code}>{flag.message}</li>)}</ul></details>}
         {glyphWarning(question.text) && <output className="mb-3 block rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{glyphWarning(question.text)}</output>}
         <div className="mb-3 flex flex-wrap items-center gap-2"><Button variant="outline" disabled={!canEditCapture} onClick={onEditCapture}>캡처 범위 수정</Button>{question.captureReviewed && <Badge className="bg-emerald-100 text-emerald-800">범위 확인 완료</Badge>}</div>
         {question.questionCaptures?.map((capture, index) => (
@@ -609,14 +615,14 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canEditCa
         <div>
           <label htmlFor="question-subject" className="text-xs font-semibold text-muted-foreground">이 문항의 교과 후보</label>
           <NativeSelect id="question-subject" value={selectedSubject} onChange={(event) => { onSubjectChange(event.target.value); setShowAllSubjects(false); }} className="mt-2 w-full">
-            {showAllSubjects ? allSubjects.map(([key, label]) => <NativeSelectOption key={key} value={key}>{label}</NativeSelectOption>) : subjectCandidates.map((candidate) => <NativeSelectOption key={candidate.key} value={candidate.key}>{candidate.label} · {candidate.confidence}%</NativeSelectOption>)}
+            {showAllSubjects ? allSubjects.map(([key, label]) => <NativeSelectOption key={key} value={key}>{label}</NativeSelectOption>) : subjectCandidates.map((candidate) => <NativeSelectOption key={candidate.key} value={candidate.key}>{candidate.label}</NativeSelectOption>)}
           </NativeSelect>
           <Button variant="ghost" size="sm" className="mt-1" onClick={() => setShowAllSubjects((value) => !value)}>{showAllSubjects ? '추천 교과만 보기' : '다른 교과 직접 선택'}</Button>
         </div>
         <div className="mt-5">
           <label htmlFor="question-standard" className="text-xs font-semibold text-muted-foreground">성취기준 후보</label>
           <NativeSelect id="question-standard" value={question.standardCode} onChange={(event) => onStandardChange(event.target.value)} className="mt-2 w-full">
-            {standardCandidates.map((candidate) => <NativeSelectOption key={candidate.code} value={candidate.code}>{candidate.code} · {candidate.confidence}%</NativeSelectOption>)}
+            {standardCandidates.map((candidate) => <NativeSelectOption key={candidate.code} value={candidate.code}>{candidate.code}</NativeSelectOption>)}
           </NativeSelect>
         </div>
         <p className="mt-4 rounded-xl border border-primary/10 bg-primary/5 p-4 text-sm leading-6 text-foreground/80">{question.standard}</p>
@@ -626,11 +632,6 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canEditCa
   );
 }
 
-
-function average(items: AnalyzedQuestion[]) {
-  if (!items.length) return 0;
-  return Math.round(items.reduce((sum, item) => sum + item.confidence, 0) / items.length);
-}
 
 function formatCompact(value: number) {
   return new Intl.NumberFormat('ko-KR', { notation: value >= 10_000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(value);

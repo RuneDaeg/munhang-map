@@ -14,6 +14,13 @@ const {
 const item = (text, x, y, width = 25) => ({ text, x, y, width, height: 10 });
 const rule = (x1, y1, x2, y2) => ({ x1, y1, x2, y2 });
 
+test('a blank box inside a first-row formula is not a merged-header column boundary',()=>{
+  const rules=[rule(0,0,200,0),rule(0,40,200,40),rule(0,80,200,80),rule(0,0,0,80),rule(40,0,40,80),rule(200,0,200,80),rule(155,22,180,22),rule(155,37,180,37),rule(155,22,155,37),rule(180,22,180,37)];
+  const source=[item('시험관',5,12,30),item('첫 행 설명',50,5,70),item('2CuO + C → 2Cu +',50,25,100),item('㉠',160,25,10),item('비커',5,55,30),item('둘째 행 설명',50,55,100)];
+  const table=detectPdfStructures(source,rules).find(s=>s.kind==='table');
+  assert.match(table.rows[0][1],/2CuO \+ C → 2Cu \+/);assert.match(table.rows[0][1],/㉠/);
+});
+
 test('painted rules respect transforms; clipping and unpainted rectangles are ignored', () => {
   const ops = {
     save: 1,
@@ -112,6 +119,30 @@ test('ruled grids preserve their first row and cannot turn into an empty diagram
     ['A', '12'],
     ['B', '24'],
   ]);
+});
+test('merged heading retains leaf columns and associates its parent with each child', () => {
+  const rules = [
+    ...[20,120,220,320].map(x=>rule(x,20,x,140)),
+    rule(170,40,170,140), rule(120,40,220,40),
+    ...[20,60,100,140].map(y=>rule(20,y,320,y)),
+  ];
+  const items = [item('장소',40,35),item('주차율',145,23,50),item('평일',127,43),item('주말',180,43),item('소요 시간',240,35,65),
+    item('공원',40,70),item('94%',127,70),item('98%',180,70),item('2분',240,70),
+    item('구청',40,110),item('91%',127,110),item('13%',180,110),item('5분',240,110)];
+  const grid=detectPdfStructures(items,rules).find(t=>t.x===20 && t.y===20);
+  assert.deepEqual(grid.rows,[['장소','주차율 평일','주차율 주말','소요 시간'],['공원','94%','98%','2분'],['구청','91%','13%','5분']]);
+});
+test('single-character circled column labels are genuine choice headings', () => {
+  for(const headings of [['㉠','㉡'],['ⓐ','ⓑ']]) {
+    const items=[item(headings[0],90,20,10),item(headings[1],200,20,10),
+      ...Array.from('①②③④⑤').flatMap((label,i)=>[item(label,20,40+i*20,10),item('가',90,40+i*20,10),item('나',200,40+i*20,10)])];
+    assert.deepEqual(detectChoiceTable(items).rows[0],['',...headings]);
+  }
+});
+test('a short boxed Korean phrase survives without promoting sparse diagram labels', () => {
+  const rules=[rule(20,20,20,40),rule(100,20,100,40),rule(20,20,100,20),rule(20,40,100,40)];
+  assert.equal(detectPdfStructures([item('옥패 한 쌍',27,25,60)],rules)[0].kind,'box');
+  assert.equal(detectPdfStructures([item('A B C',27,25,60)],rules).length,0);
 });
 test('AI reread cannot discard boxes or table headers; a missing header alone is repaired', () => {
   const source =
