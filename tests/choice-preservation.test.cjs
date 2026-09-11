@@ -89,7 +89,7 @@ test('AI response completion, compact preview and both document serializers keep
   assert.deepEqual(result.questions[0].questionCaptures, question.questionCaptures);
   assert.deepEqual(result.warnings, []);
   const html = renderToStaticMarkup(React.createElement(MathText, { text: result.questions[0].text, compact: true }));
-  assert.match(html, /whitespace-pre-line/);
+  assert.match(html, /whitespace-pre-wrap/);
   const docx = docxQuestionContent(result.questions[0].text);
   let id = 1;
   const hwpx = hwpxQuestionContent(result.questions[0].text, { paragraph: text => `<hp:p id="${id++}"><hp:t>${text}</hp:t></hp:p>`, nextId: () => id++, border: 3, headerBorder: 4 });

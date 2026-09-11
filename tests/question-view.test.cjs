@@ -27,7 +27,7 @@ test('list and detail markup render symbols and formulae, while escaping non-mat
     assert.match(html, /class="katex"/);
     assert.doesNotMatch(html, /\\bullet|\$L\$|<img/);
     assert.match(html, /&lt;img/);
-    assert.ok(html.startsWith(compact ? '<span' : '<div'));
+    assert.ok(html.startsWith('<div'));
   }
 });
 
@@ -44,4 +44,42 @@ test('inspector source declares viewport-limited sticky layout and resets its bo
   assert.match(source, /question-inspector-body[^\n]+tabIndex=\{0\}/);
   assert.ok(source.indexOf('문항 미리보기 · 수식·표·보기') < source.indexOf('<QuestionTextEditor ref={textRef}'));
   assert.match(source, /상자 \$\{boxCount\}개/);
+});
+
+test('central list keeps the same nested boxes, tables and formatting as the inspector without clamping', () => {
+  const text=String.raw`앞 발문 $a_1=5$
+:::box 조건
+<b>첫 조건</b>과 <u>밑줄</u>
+:::table 결과
+| A | B | C | D | E |
+| --- | --- | --- | --- | --- |
+| $|x|$ | 2 | 3 | 4 | 마지막 열 |
+:::
+:::
+중간 발문
+:::box 풀이
+$\sum_{k=1}^{5}a_k$의 값이다.
+:::
+끝 발문 ① 1 ② 2 ③ 3 ④ 4 ⑤ 5`;
+  for(const compact of [true,false]) {
+    const html=renderToStaticMarkup(React.createElement(MathText,{text,compact}));
+    assert.equal((html.match(/<section\b/g)||[]).length,2);
+    assert.equal((html.match(/<table\b/g)||[]).length,1);
+    assert.equal((html.match(/scope="col"/g)||[]).length,5);
+    assert.match(html,/<strong>/);assert.match(html,/<u>/);
+    assert.match(html,/tabindex="0"/);assert.match(html,/overflow-x-auto/);
+    assert.match(html,/border-foreground\/60/);
+    assert.doesNotMatch(html,/:::|katex-error|line-clamp/);
+    const fragments=['앞 발문','첫 조건','마지막 열','중간 발문','끝 발문'];
+    for(let i=1;i<fragments.length;i++) assert.ok(html.indexOf(fragments[i-1])<html.indexOf(fragments[i]));
+    assert.equal((html.match(/마지막 열/g)||[]).length,1);
+  }
+  const source=fs.readFileSync(path.join(__dirname,'../app/page.tsx'),'utf8');
+  const row=source.match(/<article key=\{`\$\{question.number\}-\$\{index\}`\}[\s\S]*?<\/article>/)?.[0];
+  assert.ok(row,'semantic list row');
+  assert.match(row,/aria-pressed=\{selected === index\}/);
+  assert.match(row,/data-question-preview[^>]*tabIndex=\{0\}/);
+  assert.match(row,/overflow-x-auto/);
+  assert.doesNotMatch(row,/line-clamp/);
+  assert.ok(row.indexOf('</button>')<row.indexOf('<MathText'),'preview is not nested in the selection button');
 });

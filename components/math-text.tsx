@@ -3,7 +3,7 @@
 import { memo } from 'react';
 import katex from 'katex';
 import { mathForRendering, normalizeQuestionText, splitMathText } from '../lib/math-normalization';
-import { parseQuestionContent, questionPlainText, tableColumnWeights } from '../lib/question-content';
+import { parseQuestionContent, tableColumnWeights } from '../lib/question-content';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { textRuns } from '../lib/text-formatting';
 
@@ -35,13 +35,13 @@ function InlineMath({ text }: { text: string }) {
 }
 
 function MathText({ text, compact = false }: { text: string; compact?: boolean }) {
-  if (compact) return <span className="whitespace-pre-line text-inherit"><InlineMath text={questionPlainText(text)} /></span>;
-  return <div className="whitespace-pre-wrap text-sm leading-7 text-foreground">
+  // Compact changes spacing only: list and inspector share the same structure.
+  return <div className={`min-w-0 whitespace-pre-wrap ${compact ? 'text-inherit leading-6' : 'text-sm leading-7 text-foreground'}`}>
     {parseQuestionContent(text).map((block, index) => {
       if (block.kind === 'text') return <div key={index}><InlineMath text={block.text} /></div>;
-      if (block.kind === 'box') return <section key={index} className="my-4 min-w-0 border border-foreground/60 px-4 py-3" aria-label={block.title || '자료 상자'}>
+      if (block.kind === 'box') return <section key={index} className={`min-w-0 border border-foreground/60 ${compact ? 'my-3 px-3 py-2' : 'my-4 px-4 py-3'}`} aria-label={block.title || '자료 상자'}>
         {block.title && <p className="mb-2 text-center font-semibold"><InlineMath text={block.title} /></p>}
-        {block.text.includes(':::') ? <MathText text={block.text} /> : <InlineMath text={block.text} />}
+        {block.text.includes(':::') ? <MathText text={block.text} compact={compact} /> : <InlineMath text={block.text} />}
       </section>;
       const weights = tableColumnWeights(block.rows);
       const total = weights.reduce((sum, width) => sum + width, 0);

@@ -75,7 +75,9 @@ test('preview builds accessible data tables, keeps boxes separate, and escapes H
   assert.match(html, /scope="col"/); assert.match(html, /katex/);
   assert.doesNotMatch(html, /<script>|<img src=x|:::box/);
   const compact = renderToStaticMarkup(React.createElement(MathText, { text, compact: true }));
-  assert.doesNotMatch(compact, /<table\b|<section\b|:::/);
+  assert.equal((compact.match(/<table\b/g) || []).length, 1);
+  assert.equal((compact.match(/<section\b/g) || []).length, 2);
+  assert.doesNotMatch(compact, /:::/);
   assert.match(compact, /24 cm/);
 });
 

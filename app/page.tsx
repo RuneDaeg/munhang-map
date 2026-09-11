@@ -455,18 +455,18 @@ export default function Home() {
                         </Empty>
                       )}
                       {checkedQuestions.map((question, index) => (
-                        <button key={`${question.number}-${index}`} onClick={() => setSelected(index)} className={`group grid w-full grid-cols-[48px_minmax(0,1fr)] gap-3 p-4 text-left transition sm:grid-cols-[54px_minmax(0,1fr)_auto] ${selected === index ? 'bg-selected' : 'hover:bg-muted/50'}`}>
-                          <span className={`grid size-11 place-items-center rounded-2xl text-lg font-extrabold ${selected === index ? 'bg-primary text-white' : 'bg-muted text-foreground'}`}>{String(question.number).padStart(2, '0')}</span>
-                          <span className="min-w-0">
+                        <article key={`${question.number}-${index}`} onClick={() => setSelected(index)} aria-label={`${question.number}번 추출 문항`} className={`group grid w-full grid-cols-[48px_minmax(0,1fr)] gap-3 p-4 text-left transition sm:grid-cols-[54px_minmax(0,1fr)_auto] ${selected === index ? 'bg-selected' : 'hover:bg-muted/50'}`}>
+                          <button type="button" onClick={() => setSelected(index)} aria-label={`${question.number}번 문항 정보 보기`} aria-pressed={selected === index} className={`grid size-11 place-items-center rounded-2xl text-lg font-extrabold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${selected === index ? 'bg-primary text-white' : 'bg-muted text-foreground'}`}>{String(question.number).padStart(2, '0')}</button>
+                          <div className="min-w-0">
                             <span className="flex flex-wrap items-center gap-2"><span className="text-xs font-medium text-muted-foreground">{question.type}</span><Badge variant="outline" className="h-5 border-primary/15 bg-primary/5 text-primary">{question.domain}</Badge>{countUnresolvedGlyphs(question.text) ? <Badge variant="secondary" className="h-5 bg-amber-100 text-amber-900">문자 복원 확인 필요</Badge> : question.visionEnhanced && <Badge variant="secondary" className="h-5 bg-emerald-50 text-emerald-700">수식·그림 인식</Badge>}</span>
-                            <span className="mt-2 line-clamp-2 block text-[15px] font-medium leading-6"><Suspense fallback={normalizeQuestionText(question.text)}><MathText text={question.text} compact /></Suspense></span>
-                          </span>
+                            <div className="mt-2 min-w-0 overflow-x-auto text-[15px] font-medium leading-6 focus-visible:outline-2 focus-visible:outline-ring" data-question-preview role="group" aria-label={`${question.number}번 문항 내용`} tabIndex={0}><Suspense fallback={normalizeQuestionText(question.text)}><MathText text={question.text} compact /></Suspense></div>
+                          </div>
                           <span className="col-start-2 flex items-center gap-2 self-center sm:col-start-auto">
                             <span className={`size-2 rounded-full ${question.validationFlags?.length ? 'bg-amber-400' : 'bg-emerald-500'}`} />
                             <span title="코드로 검사한 항목이며 경고가 없어도 원문 대조는 필요합니다" className="text-xs font-semibold tabular-nums text-muted-foreground">{question.validationFlags?.length ? `검토 ${question.validationFlags.length}건` : '경고 없음'}</span>
                             <ArrowRight className="size-4 text-muted-foreground transition group-hover:translate-x-0.5" />
                           </span>
-                        </button>
+                        </article>
                       ))}
                     </div>
                     <div className="border-t bg-muted/35 px-4 py-3 text-center text-xs text-muted-foreground">문항 텍스트와 추천 성취기준은 내보내기 전에 직접 수정할 수 있습니다</div>
