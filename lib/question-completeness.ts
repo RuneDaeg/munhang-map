@@ -1,4 +1,5 @@
-import { normalizeQuestionText } from './math-normalization';
+import { normalizeQuestionText, splitMathText } from './math-normalization';
+import { hasMissingSourcePrescripts } from './math-quality';
 import { questionPlainText } from './question-content';
 
 const LABELS = ['①', '②', '③', '④', '⑤'];
@@ -100,23 +101,44 @@ function preserveInlineMarkers(candidate: string, original: string) {
 }
 
 function leadingPrompt(original: string) {
-  const text = original.trim().replace(/^\d{1,3}[.)]\s*/, '');
+  const text = questionPlainText(original).trim().replace(/^\d{1,3}[.)]\s*/, '');
   // Only a short, leading Korean instruction; never copy an arbitrary passage as a prompt.
   if (!/^(?:다음|윗글|밑줄|주어진\s*글|글의)/.test(text)) return '';
   const prompt = text.match(/^[^①②③④⑤]{4,180}?[?？]/)?.[0];
-  if (!prompt || /(?:다|요)[.。]\s/.test(prompt) || !/[가-힣]/.test(prompt) || !/(?:것|고르|적절|알맞|일치|어법|의미)/.test(prompt)) return '';
+  // PDF text commonly separates punctuation: "핵반응이다 ." still ends a
+  // sentence. Never mistake its following equations and question for one
+  // missing leading instruction and prepend the whole original stem.
+  if (!prompt || /(?:다|요)\s*[.。](?:\s|$)/.test(prompt) || !/[가-힣]/.test(prompt) || !/(?:것|고르|적절|알맞|일치|어법|의미)/.test(prompt)) return '';
   return prompt.replace(/\s+/g, ' ').trim();
+}
+
+function includesPrompt(text: string, prompt: string) {
+  const plain = compact(questionPlainText(text));
+  if (plain.includes(compact(prompt))) return true;
+  // Equivalent math typography can differ between source and AI. If all of
+  // the surrounding instruction is already present in order, do not append a
+  // second copy merely because LaTeX braces/font commands differ.
+  const chunks = splitMathText(prompt).filter((part) => !part.math).map((part) => compact(part.text)).filter(Boolean);
+  if (chunks.join('').length < 12) return false;
+  let offset = 0;
+  return chunks.every((chunk) => {
+    const at = plain.indexOf(chunk, offset);
+    if (at < 0) return false;
+    offset = at + chunk.length;
+    return true;
+  });
 }
 
 export function preserveQuestionParts(candidate: string, original: string, choicesValue: unknown, recognizedStem = '') {
   let text = normalizeQuestionText(candidate);
   const source = normalizeQuestionText(original);
   const warnings: string[] = [];
+  if (hasMissingSourcePrescripts(text, source)) return { text: source, warning: '원문 원자핵의 왼쪽 위·아래 첨자(질량수·양성자 수)가 누락되거나 바뀌어 기존 문항을 보존했습니다. 원문 이미지와 비교해 주세요.', keptOriginal: true };
   const fromSource = sourceChoices(source);
   const fromApi = apiChoices(choicesValue);
   const choices = fromSource.length > fromApi.length ? fromSource : fromApi.length ? fromApi : fromSource;
   const prompt = leadingPrompt(source) || leadingPrompt(normalizeQuestionText(recognizedStem));
-  if (prompt && !compact(questionPlainText(text)).includes(compact(prompt))) text = `${prompt}\n${text}`;
+  if (prompt && !includesPrompt(text, prompt)) text = `${prompt}\n${text}`;
   text = preserveInlineMarkers(text, source);
   if (!inlineQuestion(source) && !inlineQuestion(text) && choices.length) {
     const attached = attachChoices(text, choices);

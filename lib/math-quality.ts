@@ -3,6 +3,100 @@ import { hasUnbalancedMathDelimiters, mathForRendering, normalizeQuestionText, s
 
 export type MathIssue = { code: string; message: string };
 
+type Prescript = { atom: string; lower?: string; upper?: string };
+type MathNode = { tag: string; children: Array<MathNode | string> };
+
+// KaTeX represents a left index as scripts on an empty mrow immediately before
+// the atom. Reading the generated structure accepts either LaTeX script order
+// and ignores harmless \mathrm / \text font wrappers, while distinguishing
+// {}^{2}_{1}H from 21H, H^{2}_{1}, and swapped/missing indices.
+function sourcePrescripts(value: string): Prescript[] {
+  const result: Prescript[] = [];
+  const childNodes = (node: MathNode) => node.children.filter((item): item is MathNode => typeof item !== 'string');
+  const nodeText = (node: MathNode): string => node.children.map((item) => typeof item === 'string' ? item : nodeText(item)).join('');
+  const unwrap = (node: MathNode): MathNode => {
+    const items = childNodes(node);
+    return ['mrow', 'mstyle'].includes(node.tag) && items.length === 1 ? unwrap(items[0]) : node;
+  };
+  const indexNumber = (node: MathNode): string | undefined => {
+    // Restrict this completeness guard to source-visible numeric isotope
+    // indices. Do not flatten compound mathematical expressions into digits.
+    if (!['mrow', 'mstyle', 'mi', 'mn', 'mo'].includes(node.tag)) return undefined;
+    if (childNodes(node).some((item) => indexNumber(item) === undefined)) return undefined;
+    const text = nodeText(node).replace(/\s/g, '').replace(/−/g, '-');
+    return /^[+-]?\d+$/.test(text) || text === '+' || text === '-' ? text : undefined;
+  };
+  const atomText = (node: MathNode): string => {
+    node = unwrap(node);
+    if (['msub', 'msup', 'msubsup'].includes(node.tag)) return atomText(childNodes(node)[0]);
+    if (node.tag === 'mrow') {
+      const atoms = childNodes(node).map(atomText);
+      return atoms.every(Boolean) ? atoms.join('') : '';
+    }
+    return ['mi', 'mtext'].includes(node.tag) ? nodeText(node).replace(/\s/g, '') : '';
+  };
+  function visit(node: MathNode) {
+    if (node.tag === 'annotation') return;
+    const items = childNodes(node);
+    for (let index = 0; index < items.length; index++) {
+      const item = unwrap(items[index]);
+      if (['msub', 'msup', 'msubsup'].includes(item.tag)) {
+        const args = childNodes(item), base = args[0] && unwrap(args[0]);
+        if (base?.tag === 'mrow' && !base.children.length && items[index + 1]) {
+          const lower = item.tag === 'msup' ? undefined : indexNumber(args[1]);
+          const upper = item.tag === 'msub' ? undefined : indexNumber(args.at(-1)!);
+          let atom = atomText(items[index + 1]);
+          // \mathrm{He} is emitted as two adjacent mi nodes; \text{He} as one.
+          if (/^[A-Z]$/.test(atom) && items[index + 2]) {
+            const next = atomText(items[index + 2]);
+            // The second element letter may itself carry a molecule subscript,
+            // e.g. \mathrm{Cl_2}; that is still Cl, not the separate element C.
+            if (/^[a-z]$/.test(next)) atom += next;
+          }
+          if (/^(?:[A-Za-z]{1,2}|[α-ωΑ-Ω])$/.test(atom) && (lower !== undefined || upper !== undefined)) result.push({ atom, lower, upper });
+        }
+      }
+      visit(items[index]);
+    }
+  }
+  for (const part of splitMathText(normalizeQuestionText(value).replace(/<\/?[bu]>/g, ''))) {
+    if (!part.math || part.text.length > 20_000) continue;
+    let markup: string;
+    try {
+      markup = katex.renderToString(part.text, { output: 'mathml', throwOnError: true, strict: 'ignore', trust: false, maxExpand: 1000, maxSize: 20 });
+    } catch { continue; } // An invalid source is not evidence for a preserved index.
+    const math = markup.match(/<math\b[^>]*>[\s\S]*?<\/math>/)?.[0];
+    if (!math || math.length > 500_000) continue;
+    const root: MathNode = { tag: 'root', children: [] }, stack = [root];
+    for (const token of math.match(/<[^>]*>|[^<]+/g) ?? []) {
+      if (token.startsWith('</')) { stack.pop(); continue; }
+      if (token.startsWith('<')) {
+        const node: MathNode = { tag: /^<([a-z][a-z0-9]*)/.exec(token)![1], children: [] };
+        stack.at(-1)!.children.push(node);
+        if (!token.endsWith('/>')) stack.push(node);
+      } else stack.at(-1)!.children.push(token);
+    }
+    visit(root);
+  }
+  return result;
+}
+
+/** A renderable AI answer must still retain each source isotope's left indices. */
+export function hasMissingSourcePrescripts(candidate: string, source: string): boolean {
+  const required = sourcePrescripts(source);
+  if (!required.length) return false;
+  const available = sourcePrescripts(candidate);
+  // Match the most specific source atoms first when some source indices are
+  // only partially visible. Every occurrence needs its own candidate atom.
+  required.sort((a, b) => Number(b.lower !== undefined) + Number(b.upper !== undefined) - Number(a.lower !== undefined) - Number(a.upper !== undefined));
+  for (const expected of required) {
+    const at = available.findIndex((actual) => actual.atom === expected.atom && (expected.lower === undefined || expected.lower === actual.lower) && (expected.upper === undefined || expected.upper === actual.upper));
+    if (at < 0) return true;
+    available.splice(at, 1);
+  }
+  return false;
+}
+
 /** Syntax/control validation only. A renderable formula can still be wrong. */
 export function mathQualityIssues(value: string): MathIssue[] {
   const text=normalizeQuestionText(value);

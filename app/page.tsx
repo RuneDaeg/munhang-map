@@ -43,6 +43,7 @@ import {
   type StandardRecord,
 } from '@/lib/pdf-analysis';
 import { enhanceQuestionsWithVision, getVisionStatus, openApiConnectionSettings, type VisionStatus } from '@/lib/vision-recognition';
+import { recognizeQuestionBatch, type BatchRecognitionProgress } from '@/lib/batch-recognition';
 import { CaptureEditor } from '@/components/capture-editor';
 import { downloadReview, parseReview } from '@/lib/review-file';
 import type { QuestionCapture } from '@/lib/question-capture';
@@ -116,12 +117,17 @@ export default function Home() {
   const [visionProgress, setVisionProgress] = useState('');
   const [visionError, setVisionError] = useState('');
   const [recognizingQuestion, setRecognizingQuestion] = useState<number | null>(null);
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<BatchRecognitionProgress | null>(null);
+  const [batchMessage, setBatchMessage] = useState('');
+  const [batchStopping, setBatchStopping] = useState(false);
+  const batchStopRef = useRef(false);
   const [analysisState, setAnalysisState] = useState<ProgressState | null>(null);
   const [bankOpen, setBankOpen] = useState(false);
   const [savingBank, setSavingBank] = useState(false);
   const [bankMessage, setBankMessage] = useState('');
   const operationRef = useRef(false);
-  const busy = status === 'analyzing' || recognizingQuestion !== null || savingBank;
+  const busy = status === 'analyzing' || recognizingQuestion !== null || savingBank || batchRunning;
 
   useEffect(() => {
     void loadAchievementStandards().then((items) => {
@@ -185,6 +191,7 @@ export default function Home() {
     setFileName(file.name); setSourcePages([]); setEditingCapture(null); setQuestionData([]); setPageCount(0);
     setStatus('analyzing'); setAnalysisProgress(0); setAnalysisState(null); setIsDemo(false);
     setError(''); setQualityWarning(''); setVisionError(''); setVisionProgress(''); setBankMessage(''); setSelected(0);
+    setBatchMessage(''); setBatchProgress(null);
     try {
       const result = await runExamAnalysis(file, (progress) => {
         setAnalysisState(progress); setAnalysisProgress(progress.percent); setVisionProgress(progress.detail);
@@ -199,7 +206,7 @@ export default function Home() {
   }
 
   async function saveCurrentToBank() {
-    if (status !== 'ready' || recognizingQuestion !== null || savingBank || isDemo) return;
+    if (operationRef.current || status !== 'ready' || recognizingQuestion !== null || savingBank || isDemo) return;
     setSavingBank(true); setBankMessage('');
     try {
       const result = await saveToQuestionBank(fileName, checkedQuestions, sourcePages);
@@ -216,6 +223,7 @@ export default function Home() {
     if (operationRef.current || recognizingQuestion !== null || savingBank) return;
     if (file.size > 80_000_000) { setError('검토 파일은 80MB 이하만 열 수 있습니다.'); return; }
     operationRef.current = true; setAnalysisState(null); setAnalysisProgress(0); setBankMessage('');
+    setBatchMessage(''); setBatchProgress(null);
     setStatus('analyzing'); setEditingCapture(null); setError(''); setVisionError(''); setVisionProgress('저장한 캡처 범위를 불러오는 중');
     try {
       const review = await parseReview(await file.text());
@@ -288,6 +296,48 @@ export default function Home() {
     } finally {
       setRecognizingQuestion(null);
       operationRef.current = false;
+    }
+  }
+
+  async function recognizeAllQuestions() {
+    if (operationRef.current || busy || isDemo || !questionData.length || status !== 'ready') return;
+    operationRef.current = true;
+    setBatchRunning(true); setBatchStopping(false); batchStopRef.current = false;
+    setVisionError(''); setBatchMessage(''); setBatchProgress(null);
+    const snapshot = [...questionData];
+    try {
+      const missing = snapshot.filter(question => !question.questionCaptures?.length);
+      if (missing.length) throw new Error(`${missing.map(question => question.number).join(', ')}번의 문항 캡처가 없습니다. 먼저 캡처 범위를 지정하세요.`);
+      if (snapshot.length > 200) throw new Error('전체 API 판독은 200문항 이하로 나누어 실행하세요.');
+      const connection = await getVisionStatus();
+      applyVisionStatus(connection);
+      if (!connection.available) throw new Error('먼저 API 연결을 설정해 주세요. 기본 분석과 성취기준 추천은 API 없이 사용할 수 있습니다.');
+      const edited = snapshot.filter(question => question.textEdited).length;
+      if (!window.confirm([
+        `현재 시험지 전체 ${snapshot.length}문항의 캡처 이미지와 추출문을 ${connection.providerLabel || '연결된 AI 공급자'}에 전송하여 판독할까요?`,
+        `문항마다 순서대로 요청하며 최대 ${snapshot.length}회의 API 판독 비용이 발생할 수 있습니다. 연결된 공통 지문도 포함될 수 있습니다. 이미 판독한 문항도 다시 요청합니다.`,
+        '진행 중 중단하면 현재 요청까지만 마칩니다. 이미 전송된 요청에는 비용이 발생할 수 있습니다. 완료된 결과는 유지하고, 실패하면 다음 요청을 멈춥니다.',
+        ...(edited ? [`직접 편집한 문항이 ${edited}개 있습니다. 결과로 갱신하기 전에 검토 저장으로 백업하는 것을 권장합니다.`] : []),
+      ].join('\n\n'))) return;
+      const catalog = standards.length ? standards : await loadAchievementStandards();
+      setStandards(catalog);
+      const result = await recognizeQuestionBatch(snapshot, {
+        recognize: enhanceQuestionsWithVision,
+        shouldStop: () => batchStopRef.current,
+        onProgress: progress => { setBatchProgress(progress); setRecognizingQuestion(progress.current); },
+      });
+      const updates = new Map(result.updates.map(({ source, question }) => [source, { ...classifyQuestion(question, catalog), textEdited: question.text === source.text ? source.textEdited : false }]));
+      // Match the immutable source object, not the current selection or list index.
+      // Edits, merges, splits and capture changes made while waiting remain intact.
+      setQuestionData(current => current.map(question => updates.get(question) ?? question));
+      const remaining = result.total - result.attempted;
+      setBatchMessage(`${result.stopped ? '전체 판독 중단' : result.failures.length ? '오류로 전체 판독 중단' : '전체 API 판독 처리 완료'} · 응답 완료 ${result.completed}/${result.total}문항 · 실패 ${result.failures.length}문항 · 미요청 ${remaining}문항. 진행 중 직접 수정한 문항은 덮어쓰지 않습니다. 원문과 대조해 주세요.`);
+      if (result.failures.length || result.warnings.length) setVisionError([...result.failures, ...result.warnings].join(' '));
+      void getVisionStatus().then(applyVisionStatus).catch(() => undefined);
+    } catch (reason) {
+      setVisionError(reason instanceof Error ? reason.message : '전체 문항 API 판독을 완료하지 못했습니다.');
+    } finally {
+      setBatchRunning(false); setRecognizingQuestion(null); setBatchStopping(false); operationRef.current = false;
     }
   }
 
@@ -384,11 +434,11 @@ export default function Home() {
                 <p className="text-xs font-semibold text-white/80">선택 문항 API {visionAvailable ? '연결됨 · 대기' : '미연결'}</p>
               </div>
               <p className="mt-2 text-sm font-semibold text-accent">첫 분석은 로컬 · 자동 API 판독 꺼짐</p>
-              <p className="mt-1 text-xs leading-5 text-white/65">문항 추출·캡처·성취기준 추천은 API 없이 진행합니다. 필요한 문항에서만 ‘이 문항만 API로 판독’을 누르세요.</p>
+              <p className="mt-1 text-xs leading-5 text-white/65">첫 분석은 API 없이 진행합니다. 필요한 문항만 판독하거나 상단 ‘전체 문항 API 판독’을 눌러 전송을 확인하세요.</p>
               <p className="mt-1 whitespace-pre-line text-xs leading-5 text-white/50">{visionAvailable
                 ? `${visionProvider || 'AI API'} · ${visionKeyHint || '서버 키'}\n${visionModel}`
                 : desktopMode || localMode
-                  ? 'API 연결을 설정해도 선택 문항 판독을 실행하기 전에는 AI에 전송하지 않습니다.'
+                  ? 'API 연결만으로는 전송하지 않습니다. 개별·전체 판독 버튼으로 실행합니다.'
                   : 'API를 설정하지 않아도 로컬 기본 분석을 사용할 수 있습니다.'}</p>
               {visionAvailable && visionUsage && <p className="mt-1 text-xs leading-5 text-white/65">토큰 {formatCompact(visionUsage.inputTokens + visionUsage.outputTokens)} · 앱 추정 ${visionUsage.estimatedUsd.toFixed(4)}{visionRemaining !== null ? ` · 잔액 $${visionRemaining.toFixed(4)}` : ''}</p>}
               {(desktopMode || localMode) && <button type="button" disabled={busy} onClick={() => void openApiConnectionSettings()} className="mt-2 text-xs font-semibold text-accent underline decoration-white/25 underline-offset-4 disabled:opacity-50">API 연결 {visionAvailable ? '변경·사용량 보기' : '설정'}</button>}
@@ -408,7 +458,7 @@ export default function Home() {
           </div>
 
           <div className="mt-auto hidden pt-8 lg:block">
-            <p className="flex items-start gap-2 text-xs leading-5 text-white/45"><Sparkles className="mt-0.5 size-3.5 shrink-0 text-accent" /> 문항 전체 캡처는 브라우저에서 만듭니다. 선택 문항 API 판독을 확인하면 해당 캡처·추출문이 연결한 AI 공급자에게 전송되며 요금이 발생할 수 있습니다.</p>
+            <p className="flex items-start gap-2 text-xs leading-5 text-white/45"><Sparkles className="mt-0.5 size-3.5 shrink-0 text-accent" /> 캡처는 로컬에서 만듭니다. 개별·전체 API 판독을 확인하면 해당 캡처·추출문이 연결한 AI 공급자에게 전송되며 요금이 발생할 수 있습니다.</p>
           </div>
         </aside>
 
@@ -422,10 +472,17 @@ export default function Home() {
                 {error && <p role="alert" className="mt-2 max-w-2xl text-sm font-medium leading-6 text-destructive">{error} 다른 PDF를 선택하면 새로 분석합니다.</p>}
                 {qualityWarning && <output className="mt-2 block max-w-2xl rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium leading-6 text-amber-800">{qualityWarning}</output>}
                 {visionError && <p role="alert" className="mt-2 max-w-2xl rounded-lg bg-red-50 px-3 py-2 text-sm font-medium leading-6 text-red-700">{visionError}</p>}
+                {(batchRunning || batchMessage) && <div className="mt-2 max-w-2xl rounded-lg border bg-muted/40 p-3">
+                  <output aria-live="polite" className="block text-sm font-medium">{batchRunning
+                    ? batchProgress ? `전체 API 판독 · 응답 완료 ${batchProgress.completed}/${batchProgress.total}문항${batchProgress.current !== null ? ` · ${batchProgress.current}번 요청 중` : ''}${batchStopping ? ' · 현재 문항 후 중단 대기' : ''}` : '전체 API 판독 준비 중'
+                    : batchMessage}</output>
+                  {batchRunning && batchProgress && <Button size="sm" variant="outline" className="mt-2" disabled={batchStopping} onClick={() => { batchStopRef.current = true; setBatchStopping(true); }}>현재 문항 후 중단</Button>}
+                </div>}
                 {bankMessage && <output className="mt-2 block max-w-2xl text-sm leading-6 text-primary">{bankMessage}</output>}
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button variant="outline" disabled={busy} onClick={() => inputRef.current?.click()}><Upload /> PDF 바꾸기</Button>
+                <Button variant="outline" disabled={busy || isDemo || status !== 'ready' || !questionData.length} onClick={() => void recognizeAllQuestions()}>{batchRunning ? <LoaderCircle className="animate-spin" /> : <Sparkles />}{batchRunning ? '전체 API 판독 중…' : '전체 문항 API 판독'}</Button>
                 <Button variant="outline" onClick={() => reviewInputRef.current?.click()} disabled={busy}>검토 파일 열기</Button>
                 <Button variant="outline" onClick={() => downloadReview(fileName, checkedQuestions, sourcePages)} disabled={busy || !sourcePages.length}>검토 저장</Button>
                 <Button variant="outline" onClick={() => void saveCurrentToBank()} disabled={busy || isDemo || status !== 'ready' || !sourcePages.length || !questionData.length}>{savingBank ? <LoaderCircle className="animate-spin" /> : <FolderOpen />}{savingBank ? '문제함 저장 중…' : '문제함에 저장'}</Button>

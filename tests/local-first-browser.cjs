@@ -43,7 +43,7 @@ async function main() {
     page.setDefaultTimeout(15000);
     page.on('pageerror', error => result.errors.push(error.message));
     page.on('console', message => { if (message.type() === 'error') result.errors.push(message.text()); });
-    let available = true, pendingResponse;
+    let available = true, pendingResponse, autoRespond = false, failureNumber = null;
     await context.route('**/*', async route => {
       const request = route.request(), url = new URL(request.url());
       if (url.origin !== origin) {
@@ -60,9 +60,10 @@ async function main() {
         assert.equal(body.questions.length, 1, 'Manual action must send exactly one question');
         assert.match(body.image, /^data:image\/(?:jpeg|png);base64,/);
         result.acceptedRequests.push(body.questions.map(question => question.number));
-        // Keep the provider response pending so the real UI race guards can be checked.
-        await new Promise(resolve => { pendingResponse = resolve; });
+        // Hold selected requests to exercise stop/edit races; no real provider call.
+        if (!autoRespond) await new Promise(resolve => { pendingResponse = resolve; });
         const question = body.questions[0];
+        if (question.number === failureNumber) return route.fulfill({ json: { error: '모의 공급자 실패 — 재요청 금지' } });
         return route.fulfill({ json: { questions: [{
           number: question.number,
           latexText: question.text.replace(/^시험지 상단 과목:[^\n]*\n/, ''),
@@ -140,11 +141,68 @@ async function main() {
     assert.match(dialogMessage, /직접 편집한 내용/);
     assert.equal(result.acceptedRequests.length, 2);
 
+    const bulk = page.getByRole('button', { name: '전체 문항 API 판독', exact: true });
+    const total = inputs.at(-1).count;
+    dialogMessage = '';
+    page.once('dialog', async dialog => { dialogMessage = dialog.message(); await dialog.dismiss(); });
+    await bulk.click();
+    await expect(bulk).toBeEnabled();
+    assert.match(dialogMessage, new RegExp(`전체 ${total}문항`));
+    assert.match(dialogMessage, /검증용 연결/);
+    assert.match(dialogMessage, /API 판독 비용/);
+    assert.match(dialogMessage, /직접 편집한 문항/);
+    assert.equal(result.acceptedRequests.length, 2);
+    result.bulkCancelRequests = 0;
+
+    // Full batch, exactly one sequential request per question; upload remains local.
+    autoRespond = true;
+    page.once('dialog', dialog => dialog.accept());
+    await bulk.click();
+    await expect(bulk).toBeEnabled({ timeout: 120000 });
+    assert.deepEqual(result.acceptedRequests.slice(2), Array.from({ length: total }, (_, index) => [index + 1]));
+    await expect(page.getByRole('status').filter({ hasText: '전체 API 판독 처리 완료' })).toContainText(`응답 완료 ${total}/${total}문항`);
+    result.bulkCompleteRequests = total;
+
+    // Stop while question 1 is in flight: keep that response, never send question 2.
+    const beforeStop = result.acceptedRequests.length;
+    autoRespond = false;
+    page.once('dialog', dialog => dialog.accept());
+    await bulk.click();
+    await expect.poll(() => result.acceptedRequests.length).toBe(beforeStop + 1);
+    await expect(page.getByRole('button', { name: 'PDF 바꾸기', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '이 문항 API 판독 중…', exact: true })).toBeDisabled();
+    await editor.fill((await editor.innerText()) + '\n전체 판독 중 편집 보호 검증');
+    await page.getByRole('button', { name: '현재 문항 후 중단', exact: true }).click();
+    pendingResponse();
+    await expect(bulk).toBeEnabled();
+    await expect(page.getByRole('status').filter({ hasText: '전체 판독 중단' })).toContainText(`미요청 ${total - 1}문항`);
+    await expect(editor).toContainText('전체 판독 중 편집 보호 검증');
+    assert.equal(result.acceptedRequests.length, beforeStop + 1);
+    result.bulkStopRequests = 1;
+    result.bulkEditDuringRequestPreserved = true;
+
+    // A provider failure stops the job, without repeating the failing paid call.
+    const beforeFailure = result.acceptedRequests.length;
+    autoRespond = true; failureNumber = 2;
+    page.once('dialog', dialog => dialog.accept());
+    await bulk.click();
+    await expect(bulk).toBeEnabled({ timeout: 120000 });
+    assert.deepEqual(result.acceptedRequests.slice(beforeFailure), [[1], [2]]);
+    await expect(page.getByRole('status').filter({ hasText: '오류로 전체 판독 중단' })).toContainText('실패 1문항');
+    await expect(page.getByRole('alert')).toContainText('모의 공급자 실패');
+    result.bulkFailureRequests = 2;
+    failureNumber = null;
+
+    const beforeUnavailable = result.acceptedRequests.length;
     available = false;
     await manual.click();
     await expect(page.getByRole('alert')).toContainText('먼저 API 연결을 설정해 주세요.');
     await expect(manual).toBeEnabled();
-    assert.equal(result.acceptedRequests.length, 2, 'Unavailable API must not send recognition requests');
+    assert.equal(result.acceptedRequests.length, beforeUnavailable, 'Unavailable API must not send recognition requests');
+    await bulk.click();
+    await expect(bulk).toBeEnabled();
+    await expect(page.getByRole('alert')).toContainText('먼저 API 연결을 설정해 주세요.');
+    assert.equal(result.acceptedRequests.length, beforeUnavailable, 'Unavailable API must block bulk too');
     result.missingKeyBlocked = true;
     await page.screenshot({ path: path.join(temporary, 'manual.png') });
     await page.setViewportSize({ width: 390, height: 844 });

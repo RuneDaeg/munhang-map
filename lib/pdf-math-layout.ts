@@ -245,18 +245,31 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
 
   // Nuclear left indices require BOTH a superscript and a subscript; isolated
   // small labels to the left never get interpreted as a nuclide automatically.
+  // A PDF text run may include the following reaction operator ("He +", "H →").
+  // Prefix its leading element without inventing per-glyph widths or moving
+  // the operator into the nucleus. A coefficient or word is not an element.
+  const leftScriptBase = (r: Run) => r.equation && !bar(r) && !radical(r) &&
+    /^[A-Z][a-z]?(?:$|\s*(?=[+−\-→←↔⇌=]))/.test(r.text);
+  const horizontalScriptBorder = (a: Run, b: Run) => rules.some((line) =>
+    Math.abs(line.y1 - line.y2) < 0.5 &&
+    Math.min(line.x1, line.x2) < Math.max(right(a), right(b)) &&
+    Math.max(line.x1, line.x2) > Math.min(a.x, b.x) &&
+    line.y1 > Math.min(a.y + a.height / 2, b.y + b.height / 2) &&
+    line.y1 < Math.max(a.y + a.height / 2, b.y + b.height / 2));
   for (const base of items.filter(
-    (r) => r.equation && !bar(r) && !radical(r) && /^[A-Z][a-z]?$/.test(r.text),
+    leftScriptBase,
   )) {
     const possible = active().filter(
       (r) =>
         r.id !== base.id &&
+        r.equation && !r.latex &&
         /^[0-9]+$/.test(r.text) &&
         r.height <= base.height * 0.82 &&
         r.height >= base.height * 0.45 &&
         base.x - right(r) >= -base.height * 0.1 &&
         base.x - right(r) <= base.height * 0.75 &&
-        !across(r, base),
+        !across(r, base) && !horizontalScriptBorder(r, base) &&
+        operandOwners(r) === operandOwners(base),
     );
     const sup = possible.filter(
       (r) =>
@@ -282,6 +295,27 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
       base.height * 0.3
     )
       continue;
+    // Both rows must describe one compact index column. Nearby table values
+    // or another expression's right-hand scripts must not become left indices.
+    const coherentRow = (row: Run[]) => {
+      const sorted = [...row].sort((a, b) => a.x - b.x);
+      return sorted.every((r, i) =>
+        Math.abs(r.height - sorted[0].height) < sorted[0].height * 0.16 &&
+        Math.abs(baseOf(r) - baseOf(sorted[0])) < sorted[0].height * 0.18 &&
+        (!i || (r.x - right(sorted[i - 1]) >= -r.height * 0.1 &&
+          r.x - right(sorted[i - 1]) <= r.height * 0.35)));
+    };
+    if (!coherentRow(s1) || !coherentRow(s2)) continue;
+    const previousOwns = [...s1, ...s2].some((s) => active().some((b) =>
+      b.id !== base.id && b.id !== s.id && b.equation && !b.latex &&
+      /^[A-Za-z0-9]+$/.test(b.text) && b.text !== 'lim' &&
+      s.height <= b.height * 0.82 && s.height >= b.height * 0.4 &&
+      s.x - right(b) >= -b.height * 0.22 && s.x - right(b) <= b.height * 0.28 &&
+      Math.abs(baseOf(s) - baseOf(b)) >= b.height * 0.18 &&
+      Math.abs(baseOf(s) - baseOf(b)) <= b.height * 0.7 &&
+      Math.abs(s.x - right(b)) <= Math.abs(base.x - right(s)) &&
+      !across(b, s) && operandOwners(b) === operandOwners(s)));
+    if (previousOwns) continue;
     const latex = `{}^{${words(s1)}}_{${words(s2)}}${expr(base)}`;
     fold(base, [...s1, ...s2], latex, baseOf(base), base.height);
     events.push({ kind: 'leftScripts', sourceIds: base.sourceIds, latex });
