@@ -37,6 +37,54 @@ export function mathForRendering(value: string): string {
   return value.replace(/(?<!\\)((?:\\\\)*)\\(lim|sum|prod)(?![A-Za-z]|\s*\\(?:no)?limits)/g,'$1\\$2\\limits');
 }
 
+// A formula such as CO_2 is ambiguous in isolation. Use chemistry prose as
+// evidence, and leave genetics questions and explicit author styling alone.
+function hasChemistryContext(value: string): boolean {
+  return /화학|탄산|이산화\s*탄소|산소|수소|이온|용액|분자식|반응식/.test(value)
+    && !/유전자|대립\s*유전자|염색체/.test(value);
+}
+
+const chemicalElements = new Set(('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca '
+  + 'Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd '
+  + 'In Sn Sb Te I Xe Cs Ba La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf Ta W Re Os '
+  + 'Ir Pt Au Hg Tl Pb Bi Po At Rn Fr Ra Ac Th Pa U Np Pu Am Cm Bk Cf Es Fm Md No Lr '
+  + 'Rf Db Sg Bh Hs Mt Ds Rg Cn Nh Fl Mc Lv Ts Og').split(' '));
+
+const chemicalScript = String.raw`(?:_(?:\d+|\{\d+\})|\^(?:[+−-]|\{(?:\d*[+−-]|[+−-]\d+)\}))`;
+const chemicalAtom = String.raw`[A-Z][a-z]?(?:${chemicalScript}){0,2}`;
+// A grouped molecule must have an atom prefix and a numeric/charge script on
+// the group. Ordinary \left(...) geometry and variable expressions stay out.
+const chemicalGroup = String.raw`(?:\\left\((?:${chemicalAtom})+\\right\)|\((?:${chemicalAtom})+\))(?:${chemicalScript}){1,2}`;
+const chemicalFormula = new RegExp(String.raw`(?<![A-Za-z\\])(?:(?:${chemicalAtom})+(?:${chemicalGroup})(?:(?:${chemicalAtom})|(?:${chemicalGroup}))*|(?:${chemicalAtom})+)(?![A-Za-z])`, 'g');
+
+function uprightChemicalFormulae(value: string): string {
+  const protectedRanges: Array<[number, number]> = [];
+  for (const match of value.matchAll(/\\(?:text|mathrm|mathit|mathbf|mathsf|mathtt|mathbb|mathcal|operatorname|ce|bar|overline|vec|hat)\s*\{/g)) {
+    const end = closingBrace(value, match.index + match[0].length - 1);
+    protectedRanges.push([match.index, end < 0 ? value.length : end + 1]);
+  }
+  // Consume a complete atom sequence first, then validate every element. This
+  // prevents accepting a chemical-looking suffix of a gene or geometry label.
+  return value.replace(chemicalFormula,
+    (formula, offset: number) => {
+      if (protectedRanges.some(([start, end]) => offset >= start && offset < end)) return formula;
+      if (!/[_^]/.test(formula)) return formula;
+      const atoms = formula.match(/[A-Z][a-z]?/g) ?? [];
+      if (!atoms.every((atom: string) => chemicalElements.has(atom))) return formula;
+      // A lone indexed C or H can be a variable; a charge or a familiar
+      // diatomic molecule supplies stronger evidence for a single atom type.
+      if (atoms.length < 2 && !formula.includes('^') && !/^(?:H|N|O|F|Cl|Br|I)_(?:2|\{2\})$/.test(formula)) return formula;
+      return `\\mathrm{${formula}}`;
+    });
+}
+
+function repairProseNewlines(value: string): string {
+  // Preserve code/quoted strings and doubled escapes. Only recognizable list
+  // starts justify turning a literal backslash-n into a real prose line break.
+  return value.replace(/(`+)[\s\S]*?\1|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?<!\\)\\n(?=[ \t]*(?:[•○◦]|ㅇ(?=[ \t.]|$)|[ㄱ-ㅎ](?=[ \t]*[.)．]|[ \t]+[가-힣㉠-㉻])|\\(?:bullet|textbullet|circ)\b))/g,
+    (match) => match === '\\n' ? '\n' : match);
+}
+
 // Match complete math spans only. Incomplete input remains editable plain text.
 // Legacy OCR sometimes omitted delimiters around a whole array/table.
 const mathSpans = /(?<!\\)(\$\$[\s\S]+?\$\$|\$(?:\\[^\n]|[^$\n]|\n(?=[ \t]*\\))+?\$|\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]|\\begin\{(array|[bpBvV]?matrix|cases|aligned)\}[\s\S]+?\\end\{\2\})/g;
@@ -133,9 +181,11 @@ export function normalizeQuestionText(value: string): string {
   let marker = '\uE000';
   while (repaired.includes(marker)) marker += '\uE000';
   const expressions: string[] = [];
+  const chemistry = hasChemistryContext(repaired);
   const prose = splitMathText(repaired).map((part) => {
     if (!part.math) return part.text;
-    const expression = repairMathEscapes(part.text);
+    const repairedExpression = repairMathEscapes(part.text);
+    const expression = chemistry ? uprightChemicalFormulae(repairedExpression) : repairedExpression;
     const unwrapped = unwrapText(expression);
     // Labels inside actual formulae (fractions, subscripts, matrices, etc.)
     // must remain LaTeX. Only math spans consisting of prose/values are flattened.
@@ -146,8 +196,7 @@ export function normalizeQuestionText(value: string): string {
       : `${delimiter}${expression}${delimiter}`);
     return `${marker}${expressions.length - 1}\uE001`;
   }).join('');
-  return unwrapText(prose).text.replace(/\\(?:qquad|quad)\b/g, ' ')
-    .replace(/(?<!\\)\\n(?=\s*(?:[•○]|\\(?:bullet|textbullet|circ)\b))/g, '\n')
+  return repairProseNewlines(unwrapText(prose).text.replace(/\\(?:qquad|quad)\b/g, ' '))
     .replace(/(?<!\\)\\([A-Za-z]+)(?:\{\})?/g, (command, name: string) => proseSymbols[name] ?? command)
     .replace(new RegExp(`${marker}(\\d+)\uE001`, 'g'), (_match, index: string) => expressions[Number(index)]);
 }

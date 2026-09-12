@@ -182,6 +182,83 @@ function covered(lines: Rule[], y: number, left: number, right: number) {
   return total / (right - left);
 }
 
+/** Recover body rows whose rule stops at a row-spanning label cell. */
+function splitBodyRows(
+  content: PageText[],
+  rules: Rule[],
+  vertical: Rule[],
+  xs: number[],
+  ys: number[],
+): { ys: number[]; rows: string[][] } | undefined {
+  // A short divider is structural only when both ends meet established rows.
+  // In-cell answer boxes and diagram strokes do not establish new boundaries.
+  const shortDividers = vertical.filter(
+    (v) =>
+      v.x1 > xs[0] + 2 && v.x1 < xs.at(-1)! - 2 &&
+      v.y1 >= ys[1] - 2 && v.y2 <= ys.at(-1)! + 2 &&
+      ys.some((y) => Math.abs(y - v.y1) < 2) &&
+      ys.some((y) => Math.abs(y - v.y2) < 2),
+  );
+  const fineXs = unique([...xs, ...shortDividers.map((v) => v.x1)]);
+  const partialYs = unique(rules.filter(
+    (r) =>
+      Math.abs(r.y2 - r.y1) < 1 &&
+      r.y1 > ys[1] + 2 && r.y1 < ys.at(-1)! - 2 &&
+      !ys.some((y) => Math.abs(y - r.y1) < 2) &&
+      fineXs.some((x) => Math.abs(x - r.x1) < 2) &&
+      fineXs.some((x) => Math.abs(x - r.x2) < 2) &&
+      // A real split crosses at least one complete existing column.
+      xs.slice(0, -1).some((x, c) =>
+        covered(rules, r.y1, x, xs[c + 1]) > 0.9,
+      ),
+  ).map((r) => r.y1));
+  if (!partialYs.length) return;
+  const fineYs = unique([...ys, ...partialYs]);
+  if (fineXs.length > 33 || fineYs.length > 81) return;
+
+  // Build actual cells from the fine grid. Missing boundaries join cells, so
+  // a multi-line shared label is read once as a phrase, then linked to each row.
+  const columns = fineXs.length - 1, rows = fineYs.length - 1;
+  const parent = Array.from({ length: columns * rows }, (_, i) => i);
+  const root = (i: number): number =>
+    parent[i] === i ? i : (parent[i] = root(parent[i]));
+  const join = (a: number, b: number) => { parent[root(b)] = root(a); };
+  const transposed = rules.map((r) => ({ x1:r.y1, y1:r.x1, x2:r.y2, y2:r.x2 }));
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < columns; c++) {
+      const cell = r * columns + c;
+      if (c + 1 < columns && covered(transposed, fineXs[c + 1], fineYs[r], fineYs[r + 1]) < 0.5)
+        join(cell, cell + 1);
+      if (r + 1 < rows && covered(rules, fineYs[r + 1], fineXs[c], fineXs[c + 1]) < 0.5)
+        join(cell, cell + columns);
+    }
+  }
+  const cellItems = new Map<number, PageText[]>();
+  const interval = (bounds: number[], value: number) =>
+    Math.max(0, Math.min(bounds.length - 2, bounds.findIndex((n) => n > value) - 1));
+  for (const item of content) {
+    const c = interval(fineXs, Math.min(item.x + item.width / 2, fineXs.at(-1)! - .01));
+    const r = interval(fineYs, Math.min(item.y + item.height / 2, fineYs.at(-1)! - .01));
+    const id = root(r * columns + c);
+    if (!cellItems.has(id)) cellItems.set(id, []);
+    cellItems.get(id)!.push(item);
+  }
+  const cellText = new Map(
+    [...cellItems].map(([id, items]) => [id, textOf(items).replace(/\n/g, ' ')]),
+  );
+  return {
+    ys: fineYs,
+    rows: fineYs.slice(0, -1).map((_y, r) => xs.slice(0, -1).map((x, c) => {
+      const cells = new Set<number>();
+      for (let sub = 0; sub < columns; sub++) {
+        const center = (fineXs[sub] + fineXs[sub + 1]) / 2;
+        if (center > x && center < xs[c + 1]) cells.add(root(r * columns + sub));
+      }
+      return [...cells].map((id) => cellText.get(id) ?? '').filter(Boolean).join(' ');
+    })),
+  };
+}
+
 /** Conservative geometry recovery, including a split top border around a 보기 heading. */
 export function detectPdfStructures(
   items: PageText[],
@@ -247,7 +324,7 @@ export function detectPdfStructures(
     }
     xs.sort((a,b) => a-b);
     const content = items.filter((i) => inside(i, area));
-    const ys = unique([
+    let ys = unique([
       top,
       ...rules
         .filter(
@@ -266,9 +343,11 @@ export function detectPdfStructures(
       xs.length <= 17 &&
       ys.length <= 81
     ) {
+      const split = splitBodyRows(content, rules, vertical, xs, ys);
+      if (split) ys = split.ys;
       const rows = ys.slice(0, -1).map((y, r) =>
         xs.slice(0, -1).map((x, c) =>
-          textOf(
+          r > 0 && split ? split.rows[r][c] : textOf(
             content.filter((i) => {
               if (r === 0 && inside(i, {...area, y, height:ys[r+1]-y})) {
                 // Flatten a multi-level heading to one label per leaf column.

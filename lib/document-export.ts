@@ -121,13 +121,17 @@ export function downloadDocx(title: string, questions: AnalyzedQuestion[]) {
 
 export function createDocxBytes(title: string, questions: AnalyzedQuestion[]) {
   const images = collectPageImages(questions);
+  const contents = questions.map((question) => {
+    try { return docxQuestionContent(question.text); }
+    catch (error) { throw new Error(`${question.number}번 문항: ${error instanceof Error ? error.message : '수식 변환에 실패했습니다.'}`); }
+  });
   const body = questions.map((question, index) => `
     <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>${xml(`${question.number}번 문항`)}</w:t></w:r></w:p>
     ${question.sourceFileName ? `<w:p><w:r><w:t>${xml(`원본: ${question.sourceFileName} · ${question.number}번`)}</w:t></w:r></w:p>` : ''}
-    ${docxQuestionContent(question.text)}
+    ${contents[index]}
     <w:p><w:pPr><w:pStyle w:val="Standard"/></w:pPr><w:r><w:t>${xml(`${question.standardCode} ${question.domain}`)}</w:t></w:r></w:p>
     <w:p><w:r><w:t>${xml(question.standard)}</w:t></w:r></w:p>
-    ${(images.byQuestion.get(index) ?? []).map((image, imageIndex) => `<w:p><w:r><w:rPr><w:b/><w:color w:val="64748B"/></w:rPr><w:t>${image.label || (question.questionCaptures?.length ? '문항 전체 원문 캡처' : '문항 그림자료')}${question.captureWarning ? ' · 범위 확인 필요' : ''}</w:t></w:r></w:p>${docxImageParagraph(`rIdImage${image.itemId}`, index * 100 + imageIndex + 1, image)}`).join('')}`).join('');
+    ${(images.byQuestion.get(index) ?? []).map((image, imageIndex) => `<w:p><w:pPr><w:keepNext/></w:pPr><w:r><w:rPr><w:b/><w:color w:val="64748B"/></w:rPr><w:t>${image.label || (question.questionCaptures?.length ? '문항 전체 원문 캡처' : '문항 그림자료')}${question.captureWarning ? ' · 범위 확인 필요' : ''}</w:t></w:r></w:p>${docxImageParagraph(`rIdImage${image.itemId}`, index * 100 + imageIndex + 1, image)}`).join('')}`).join('');
   const sourceNotice = '<w:p><w:r><w:rPr><w:color w:val="64748B"/><w:sz w:val="18"/></w:rPr><w:t>성취기준 출처: pblsketch/worksheet-grab (2022 개정 교육과정)</w:t></w:r></w:p>';
   const imageRelationships = images.unique.map((image) => `<Relationship Id="rIdImage${image.itemId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${image.fileName}"/>`).join('');
   const entries: ZipEntry[] = [
@@ -135,7 +139,7 @@ export function createDocxBytes(title: string, questions: AnalyzedQuestion[]) {
     entry('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`),
     entry('word/_rels/document.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>${imageRelationships}</Relationships>`),
     entry('word/styles.xml', docxStyles()),
-    entry('word/document.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body><w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>${xml(title)}</w:t></w:r></w:p><w:p><w:r><w:t>${xml(`문항 ${questions.length}개 · 성취기준별 자동 분류`)}</w:t></w:r></w:p>${body}${sourceNotice}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134"/></w:sectPr></w:body></w:document>`),
+    entry('word/document.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body><w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>${xml(title)}</w:t></w:r></w:p><w:p><w:r><w:t>${xml(`문항 ${questions.length}개 · 성취기준별 자동 분류`)}</w:t></w:r></w:p>${body}${sourceNotice}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134"/></w:sectPr></w:body></w:document>`),
     ...images.unique.map((image) => ({ name: `word/media/${image.fileName}`, data: image.data })),
   ];
   return zip(entries);

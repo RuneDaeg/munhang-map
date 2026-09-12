@@ -6,6 +6,8 @@ import {
   type QuestionBlock,
 } from './question-content';
 import { textRuns, unformattedText } from './text-formatting';
+import { latexToOmml } from './docx-math';
+import { hasUnbalancedMathDelimiters, mathForRendering, splitMathText } from './math-normalization';
 
 const escapeXml = (value: string) =>
   value.replace(
@@ -30,17 +32,44 @@ const widthsOf = (rows: string[][], total: number) => {
   return widths;
 };
 
+// Newlines inside cases/matrices belong to one equation, not separate Word
+// paragraphs. Normalize the delimiters while retaining the complete math span.
+function paragraphLines(text: string): string[] {
+  if (hasUnbalancedMathDelimiters(text) && /(?<!\\)\$(?=[A-Za-z\\{]|[^$\n]*[_^\\])/.test(text)) {
+    throw new Error('수식의 $ 구분자가 닫히지 않았습니다. 문항 편집창에서 수식을 확인해 주세요.');
+  }
+  const lines = [''];
+  for (const part of splitMathText(text)) {
+    if (part.math) {
+      const delimiter = part.display ? '$$' : '$';
+      lines[lines.length - 1] += `${delimiter}${part.text}${delimiter}`;
+    } else {
+      const pieces = part.text.split('\n');
+      lines[lines.length - 1] += pieces[0];
+      lines.push(...pieces.slice(1));
+    }
+  }
+  return lines;
+}
+
 function docxParagraph(
   text: string,
   header = false,
   align = 'left',
   keepNext = false,
 ) {
+  // A partial rich-text selection can cross a TeX delimiter. Never silently
+  // serialize the fragments as $...$ text if they cannot be one math object.
+  if (hasUnbalancedMathDelimiters(text) && /(?<!\\)\$(?=[A-Za-z\\{]|[^$\n]*[_^\\])/.test(text)) {
+    throw new Error('한 줄 수식의 $ 구분자를 확인해 주세요. 여러 줄 수식에는 $$...$$를 사용해 주세요.');
+  }
+  if (splitMathText(text).some((part) => part.math && /<\/?(?:b|u)>/.test(part.text))) {
+    throw new Error('수식 일부에 적용된 굵게·밑줄을 해제하고, $...$ 수식 전체를 선택해 서식을 적용해 주세요.');
+  }
   const runs = textRuns(text)
-    .map(
-      (run) =>
-        `<w:r><w:rPr>${header || run.bold ? '<w:b/>' : ''}${run.underline ? '<w:u w:val="single"/>' : ''}</w:rPr><w:t xml:space="preserve">${escapeXml(run.text)}</w:t></w:r>`,
-    )
+    .map((run) => splitMathText(run.text).map((part) => part.math
+      ? latexToOmml(mathForRendering(part.text), { display: part.display, bold: header || run.bold, underline: run.underline })
+      : `<w:r><w:rPr>${header || run.bold ? '<w:b/>' : ''}${run.underline ? '<w:u w:val="single"/>' : ''}</w:rPr><w:t xml:space="preserve">${escapeXml(part.text)}</w:t></w:r>`).join(''))
     .join('');
   return `<w:p><w:pPr><w:jc w:val="${align}"/><w:spacing w:after="100" w:line="320" w:lineRule="auto"/>${keepNext ? '<w:keepNext/>' : ''}</w:pPr>${runs}</w:p>`;
 }
@@ -53,7 +82,7 @@ export function docxQuestionContent(
   return blocks
     .map((block, index) => {
       if (block.kind === 'text') {
-        const lines = block.text.split('\n');
+        const lines = paragraphLines(block.text);
         const followedByTable =
           blocks[index + 1] && blocks[index + 1].kind !== 'text';
         return lines
@@ -81,8 +110,7 @@ export function docxQuestionContent(
                 `<w:tc><w:tcPr><w:tcW w:w="${widths[c]}" w:type="dxa"/><w:vAlign w:val="center"/>${header ? '<w:shd w:val="clear" w:fill="EAF0F4"/>' : ''}</w:tcPr>${
                   block.kind === 'box' && cell.includes(':::')
                     ? docxQuestionContent(cell, Math.max(1200, widths[c] - 300))
-                    : cell
-                        .split('\n')
+                    : paragraphLines(cell)
                         .map((line) =>
                           docxParagraph(
                             line,

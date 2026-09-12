@@ -50,7 +50,7 @@ export function ExportDialog({ fileName, questions, onClose }: { fileName: strin
       </div>
       {exporting && <output aria-live="polite" className="flex items-center gap-2 text-sm"><LoaderCircle className="size-4 animate-spin" />{progress}</output>}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-      <p className="text-sm text-muted-foreground">수식은 LaTeX 원문과 원문 캡처로 보존됩니다. 네이티브 편집 수식 변환은 아직 지원하지 않습니다.</p>
+      <p className="text-sm leading-6 text-muted-foreground">DOCX는 지원되는 수식을 Word에서 편집 가능한 수식으로 변환하고 원문 캡처도 첨부합니다. 변환할 수 없는 수식은 문항 번호와 오류를 표시하고 DOCX 내보내기를 중단합니다. HWPX는 수식을 LaTeX 원문과 원문 캡처로 보존합니다.</p>
     </DialogContent>
   </Dialog>;
 }
