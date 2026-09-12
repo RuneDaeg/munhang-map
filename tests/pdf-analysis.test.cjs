@@ -163,6 +163,11 @@ test('DOCX and HWPX embed all continuation captures and support images above JS 
   assert.equal((hwpx.get('Contents/section0.xml').toString().match(/<hp:pic /g) ?? []).length, 2);
   for (const name of ['Contents/section0.xml', 'Preview/PrvText.txt']) {
     assert.doesNotMatch(hwpx.get(name).toString(), /ext\{|\t/);
-    assert.ok(hwpx.get(name).toString().includes(String.raw`그림 아래 질문 $\frac{a}{b}$`));
+    assert.match(hwpx.get(name).toString(), /그림 아래 질문/);
   }
+  const section = hwpx.get('Contents/section0.xml').toString();
+  assert.equal((section.match(/<hp:equation\b/g) ?? []).length, 1);
+  assert.match(section, /<hp:script>\{\{it a\}\} OVER \{\{it b\}\}<\/hp:script>/);
+  assert.doesNotMatch(section, /\$|\\frac/);
+  assert.ok(hwpx.get('Preview/PrvText.txt').toString().includes(String.raw`그림 아래 질문 $\frac{a}{b}$`));
 });

@@ -132,6 +132,21 @@ test('sum/product limits and integral bounds become native n-ary objects with op
   assert.ok(all(tree(spaced), 'm:nary')[0].children.at(-1).children.some((child) => child.name === 'm:sSub'));
 });
 
+test('ordinary balanced parentheses are the complete n-ary operand without consuming later terms', () => {
+  for (const command of ['sum', 'prod', 'int']) {
+    const result = latexToOmml(`\\${command}\\limits_{k=1}^{24}(S_{k+1}-S_k)+b`);
+    const root = tree(result), nary = all(root, 'm:nary')[0];
+    const operand = nary.children.at(-1);
+    assert.ok(operand.children.length > 3, 'all of the delimited operand is inside m:e');
+    assert.equal(operand.children.at(-1).name, 'm:r');
+    assert.equal(root.children.at(-1).name, 'm:r', 'following b stays outside the sum');
+    assert.equal(text(result), 'k=124(Sk+1−Sk)+b');
+  }
+  const nested = latexToOmml(String.raw`\sum_i[(a_i+b_i)c_i]+d`);
+  assert.equal(all(tree(nested), 'm:nary')[0].children.at(-1).children.at(-1).name, 'm:r');
+  assert.equal(text(nested), 'i[(ai+bi)ci]+d');
+});
+
 test('limits, upright function names and symbols stay native math without raw commands', () => {
   const result = latexToOmml(String.raw`\lim\limits_{x\to0}\frac{\sin x}{x}+\log_2 y\le\infty`);
   assert.equal(all(tree(result), 'm:limLow').length, 1);
@@ -148,17 +163,20 @@ test('upright chemistry, mathematical alphabets, bold and underline are retained
   assert.equal(text(chemistry), 'Ca(OH)2+SO42−');
   assert.equal(all(tree(chemistry), 'm:sSubSup').length, 1);
   for (const char of ['C', 'a', 'O', 'H', 'S']) {
-    assert.match(chemistry, new RegExp(`<m:r><m:rPr><m:scr m:val="roman"/><m:sty m:val="p"/>[\\s\\S]*?<m:t xml:space="preserve">${char}</m:t>`));
+    assert.match(chemistry, new RegExp(`<m:r><m:rPr><m:nor/></m:rPr><w:rPr>[^<]*[\\s\\S]*?<w:i w:val="0"/>[\\s\\S]*?<m:t xml:space="preserve">${char}</m:t>`));
   }
   const formatted = latexToOmml(String.raw`x+\mathrm{H}+\mathbb{R}+\mathcal{F}+\text{조건}`, { bold: true, underline: true });
   assert.match(formatted, /<m:sty m:val="bi"\/>/);
   assert.match(formatted, /<m:sty m:val="b"\/>/);
   assert.match(formatted, /<m:scr m:val="double-struck"\/>/);
   assert.match(formatted, /<m:scr m:val="script"\/>/);
+  assert.equal(tree(formatted).children[0].name, 'm:bar');
+  assert.equal(all(tree(formatted), 'm:bar').length, 1, 'one underline spans the whole formula');
+  assert.match(formatted, /<m:pos m:val="bot"\/>/);
   for (const run of all(tree(formatted), 'm:r')) {
     const wordPr = run.children.find((child) => child.name === 'w:rPr');
     assert.ok(wordPr.children.some((child) => child.name === 'w:b'));
-    assert.ok(wordPr.children.some((child) => child.name === 'w:u'));
+    assert.ok(!wordPr.children.some((child) => child.name === 'w:u'), 'no per-atom double underline');
   }
 });
 

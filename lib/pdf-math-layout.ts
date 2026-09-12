@@ -289,6 +289,11 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
 
   // Attach smaller right-hand runs to the closest eligible math base. Work on
   // base+script relations before joining baseline runs, preserving CH3OH order.
+  // Keep occupied slots separately from LaTeX: a nested power inside a fraction
+  // does not occupy the fraction's own superscript slot. Folding also expands
+  // the base's bounds, so the second pass must not append another superscript
+  // merely because a detached glyph is now close to that expanded edge.
+  const rightScriptSlots = new Map<number, { sup: boolean; sub: boolean }>();
   const attachScripts = (compounds = false) => {
   const attachments = new Map<number, { base: Run; sup: Run[]; sub: Run[] }>();
   for (const s of active()) {
@@ -311,6 +316,7 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
       .map((b) => ({ b, delta: baseOf(s) - baseOf(b) }))
       .filter(
         ({ b, delta }) =>
+          !rightScriptSlots.get(b.id)?.[delta < 0 ? 'sup' : 'sub'] &&
           Math.abs(delta) >= b.height * 0.18 &&
           Math.abs(delta) <= b.height * (s.latex ? 1.3 : 0.7),
       )
@@ -329,27 +335,32 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
       attachments.set(b.id, { base: b, sup: [], sub: [] });
     attachments.get(b.id)![delta < 0 ? 'sup' : 'sub'].push(s);
   }
-  for (const { base, sup, sub } of attachments.values()) {
+  // Resolve inner scripts before their parent consumes the same run. PDF text
+  // order can be reversed and is not a reliable nesting order.
+  for (const { base, sup, sub } of [...attachments.values()].sort((a, b) => a.base.height - b.base.height)) {
     if (removed.has(base.id)) continue;
     // Charge/index runs can contain multiple glyphs, e.g. Y^{2−}. Only expand
     // from an already anchored script along its own small-font baseline.
     for (const group of [sup, sub]) {
       if (!group.length) continue;
-      for (let pass = 0; pass < 4; pass++) {
+      for (;;) {
         const last = group.reduce((a, b) => (right(a) > right(b) ? a : b));
         const next = active()
           .filter(
             (r) =>
               !group.includes(r) &&
               r.id !== base.id &&
+              r.equation &&
               !r.latex &&
               /^[A-Za-z0-9+−-]+$/.test(r.text) &&
               Math.abs(r.height - last.height) < last.height * 0.16 &&
               Math.abs(baseOf(r) - baseOf(last)) < last.height * 0.18 &&
               r.x - right(last) >= -last.height * 0.1 &&
-              r.x - right(last) <= last.height * 0.22 &&
+              // Use the same local-row tolerance as baseline composition;
+              // signed exponents have wider spacing after the sign glyph.
+              r.x - right(last) <= last.height * 0.35 &&
               right(r) - base.x < base.height * 2.5 &&
-              !across(last, r),
+              !across(last, r) && operandOwners(last) === operandOwners(r),
           )
           .sort((a, b) => a.x - b.x)[0];
         if (!next) break;
@@ -368,8 +379,14 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
     if (!eligible.length) continue;
     const s1 = sup.filter((r) => !removed.has(r.id)),
       s2 = sub.filter((r) => !removed.has(r.id));
-    const latex = `${expr(base)}${s1.length ? `^{${words(s1)}}` : ''}${s2.length ? `_{${words(s2)}}` : ''}`;
+    const scriptWords = (group: Run[]) => group.sort((a, b) => a.x - b.x).map(expr).join('');
+    const latex = `${expr(base)}${s1.length ? `^{${scriptWords(s1)}}` : ''}${s2.length ? `_{${scriptWords(s2)}}` : ''}`;
     fold(base, eligible, latex, baseOf(base), base.height);
+    const occupied = rightScriptSlots.get(base.id);
+    rightScriptSlots.set(base.id, {
+      sup: !!s1.length || !!occupied?.sup,
+      sub: !!s2.length || !!occupied?.sub,
+    });
     events.push({ kind: 'rightScripts', sourceIds: base.sourceIds, latex });
   }
   };

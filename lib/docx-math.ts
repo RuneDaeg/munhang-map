@@ -3,7 +3,7 @@ import katex from 'katex';
 export type DocxMathOptions = { display?: boolean; bold?: boolean; underline?: boolean };
 
 type MathNode = { tag: string; attrs: Record<string, string>; children: Array<MathNode | string> };
-type Style = { bold: boolean; underline: boolean; variant?: string };
+type Style = { bold: boolean; variant?: string };
 
 // The caller declares m and w on document.xml. Element ordering follows the
 // Microsoft Open XML SDK schema, notably CT_F, CT_Rad, CT_Nary, CT_SSubSup,
@@ -105,9 +105,11 @@ function run(text: string, tag: string, style: Style): string {
   if (!Object.hasOwn(variants, variant)) failure(`mathvariant=${variant}`);
   const [script, baseStyle] = variants[variant];
   const mathStyle = style.bold ? (baseStyle === 'i' || baseStyle === 'bi' ? 'bi' : 'b') : baseStyle;
-  // m:nor is an alternative to m:scr/m:sty, not an additional property.
-  const mathPr = tag === 'mtext' ? '<m:nor/>' : `<m:scr m:val="${script}"/><m:sty m:val="${mathStyle}"/>`;
-  const wordPr = `<w:rFonts w:ascii="Cambria Math" w:hAnsi="Cambria Math"/>${style.bold || mathStyle.startsWith('b') ? '<w:b/>' : ''}${style.underline ? '<w:u w:val="single"/>' : ''}`;
+  // Normal text is native OMML too, and preserves upright chemical/function
+  // letters in readers that ignore m:sty. It replaces, not accompanies, scr/sty.
+  const normal = tag === 'mtext' || (tag === 'mi' && script === 'roman' && ['p', 'b'].includes(mathStyle));
+  const mathPr = normal ? '<m:nor/>' : `<m:scr m:val="${script}"/><m:sty m:val="${mathStyle}"/>`;
+  const wordPr = `<w:rFonts w:ascii="Cambria Math" w:hAnsi="Cambria Math"/>${style.bold || mathStyle.startsWith('b') ? '<w:b/>' : ''}${normal ? `<w:i w:val="${mathStyle.includes('i') ? 1 : 0}"/>` : ''}`;
   return `<m:r><m:rPr>${mathPr}</m:rPr><w:rPr>${wordPr}</w:rPr><m:t xml:space="preserve">${xml(text)}</m:t></m:r>`;
 }
 
@@ -159,6 +161,22 @@ function row(children: MathNode[], style: Style): string {
     return `<m:d><m:dPr><m:begChr m:val="${xml(begin ? content(begin) : '')}"/><m:sepChr m:val="${xml(separators.length ? content(separators[0]) : '')}"/><m:endChr m:val="${xml(end ? content(end) : '')}"/><m:grow m:val="1"/></m:dPr>${groups.map((group) => `<m:e>${row(group, style)}</m:e>`).join('')}</m:d>`;
   }
   const parts: string[] = [];
+  function closingOperand(start: number): number | undefined {
+    const pairs: Record<string, string> = { '(': ')', '[': ']', '{': '}' };
+    const opening = children[start];
+    if (opening?.tag !== 'mo' || !Object.hasOwn(pairs, content(opening))) return;
+    const stack: string[] = [];
+    for (let index = start; index < children.length; index++) {
+      const node = children[index];
+      if (node.tag !== 'mo') continue;
+      const char = content(node);
+      if (Object.hasOwn(pairs, char)) stack.push(pairs[char]);
+      else if (Object.values(pairs).includes(char)) {
+        if (stack.pop() !== char) return;
+        if (!stack.length) return index;
+      }
+    }
+  }
   function takeNary(index: number): { value: string; last: number } {
     let nextIndex = index + 1;
     let spacing = '';
@@ -169,6 +187,13 @@ function row(children: MathNode[], style: Style): string {
     if (next && naryInfo(next)) {
       const nested = takeNary(nextIndex);
       return { value: nary(children[index], spacing + nested.value, style), last: nested.last };
+    }
+    // Ordinary (a+b) uses separate mo siblings, unlike a \left...\right mrow.
+    // Its balanced delimiters provide the exact summand boundary.
+    const close = closingOperand(nextIndex);
+    if (close !== undefined) {
+      const operand = row(children.slice(nextIndex, close + 1), style);
+      return { value: nary(children[index], spacing + operand, style), last: close };
     }
     const operand = next && !(next.tag === 'mo' && !isFence(next)) ? convert(next, style) : '';
     return { value: nary(children[index], spacing + operand, style), last: nextIndex - (operand ? 0 : 1) };
@@ -301,7 +326,10 @@ export function latexToOmml(latex: string, options: DocxMathOptions = {}): strin
   } catch {
     return failure('LaTeX 문법을 확인해 주세요');
   }
-  const body = convert(parseMathml(markup), { bold: options.bold === true, underline: options.underline === true });
+  const body = convert(parseMathml(markup), { bold: options.bold === true });
   if (!body) failure('표시할 수식이 없습니다');
-  return `<m:oMath>${body}</m:oMath>`;
+  // A Word run underline inside OMML is ignored by some native readers.
+  // Use one bottom bar across the complete selected formula, including scripts.
+  const styled = options.underline ? `<m:bar><m:barPr><m:pos m:val="bot"/></m:barPr><m:e>${body}</m:e></m:bar>` : body;
+  return `<m:oMath>${styled}</m:oMath>`;
 }

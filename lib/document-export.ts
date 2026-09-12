@@ -200,19 +200,20 @@ export function createHwpxBytesFromTemplate(title: string, questions: AnalyzedQu
   ]);
 }
 
-function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestion[], images: Map<number, EmbeddedPageImage[]>, tableStyles: { border: number; headerBorder: number; runs:(text:string,base?:string)=>string }) {
+function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestion[], images: Map<number, EmbeddedPageImage[]>, tableStyles: { border: number; headerBorder: number; runs:(text:string,base?:string,nextId?:()=>number)=>string }) {
   const open = base.match(/<hs:sec\b[^>]*>/)?.[0];
   const first = base.match(/<hp:p\b[\s\S]*?<\/hp:p>/)?.[0]
     ?.replace(/<hp:linesegarray>[\s\S]*?<\/hp:linesegarray>/g, '')
     .replace(/id="\d+"/, 'id="1"');
   if (!open || !first) throw new Error('HWPX 베이스 템플릿의 secPr/colPr를 찾지 못했습니다.');
   let id = 2;
-  const paragraph = (text: string, charPr = '0') => `<hp:p id="${id++}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">${tableStyles.runs(text,charPr)}</hp:p>`;
+  const paragraph = (text: string, charPr = '0') => `<hp:p id="${id++}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">${tableStyles.runs(text,charPr,()=>id++)}</hp:p>`;
   const parts = [first, paragraph(title, '5'), paragraph(`문항 ${questions.length}개 · 성취기준별 자동 분류`, '6'), paragraph('')];
   for (const [index, question] of questions.entries()) {
     parts.push(paragraph(`${question.number}번 문항`, '6'));
     if (question.sourceFileName) parts.push(paragraph(`원본: ${question.sourceFileName} · ${question.number}번`, '2'));
-    parts.push(hwpxQuestionContent(question.text, { paragraph, nextId: () => id++, ...tableStyles }));
+    try { parts.push(hwpxQuestionContent(question.text, { paragraph, nextId: () => id++, ...tableStyles })); }
+    catch (error) { throw new Error(`${question.number}번 문항: ${error instanceof Error ? error.message : 'HWPX 수식 변환에 실패했습니다.'}`); }
     parts.push(paragraph(`${question.standardCode}  ${question.domain}`, '6'));
     parts.push(paragraph(`- ${question.standard}`));
     for (const image of images.get(index) ?? []) {

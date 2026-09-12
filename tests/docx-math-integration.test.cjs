@@ -38,7 +38,7 @@ test('export declares the math namespace and reports the offending question on i
   const question = {number:9,text:'속력 $v_A$',standardCode:'',domain:'',standard:''};
   const bytes = Buffer.from(createDocxBytes('검증', [question]));
   assert.ok(bytes.includes(Buffer.from('xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"')));
-  for (const text of ['$x^{2}^{3}$', '$v_A', '$\\unsupported{x}$', '$a\n+b$', '속력 $<b>v_A</b>$이다.']) {
+  for (const text of ['$x^{2}^{3}$', '$v_A', '$\\unsupported{x}$', '$a\n+b$', '속력 $<b>v_A</b>$이다.', '$[b]v_A[/b]$', '$[u]v_A[/u]$']) {
     assert.throws(() => createDocxBytes('검증', [{...question,text}]), /9번 문항:/);
   }
   assert.doesNotThrow(() => docxQuestionContent('① $10\n② $20\n③ $30\n④ $40\n⑤ $50'));

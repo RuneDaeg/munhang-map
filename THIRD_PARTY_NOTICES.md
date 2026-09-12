@@ -26,6 +26,14 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 The upstream repository declares MIT in its README; it carries no separate `LICENSE` file at the pinned revision, so the permission notice above is reproduced here to satisfy the MIT attribution requirement when this project is redistributed.
 
+## Hancom public document format and native equation language
+
+본 제품은 한글과컴퓨터의 한글 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다.
+
+- `lib/hwpx-math.ts` independently converts supported KaTeX MathML structures into native Hancom equation commands and an HWPX equation object.
+- References: [Hancom Equation Commands](https://help.hancom.com/hoffice/multi/en_us/hwp/insert/equation/equation(explanation).htm) and [Hancom Equation Fonts](https://help.hancom.com/hoffice/multi/ko_kr/hwp/insert/equation/equation(font).htm).
+- Hancom application binaries and equation-font files are not bundled. The public-format attribution does not change the separate licenses of this application or the incorporated third-party materials.
+
 ## Achievement-standard dataset
 
 - Project: [pblsketch/worksheet-grab](https://github.com/pblsketch/worksheet-grab)
@@ -46,7 +54,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 - Project: [KaTeX](https://github.com/KaTeX/KaTeX)
 - Version used: `0.18.5`
 - License: MIT
-- Use: browser-side rendering of user-entered LaTeX math
+- Use: browser-side rendering of user-entered LaTeX math and MathML parsing input for native document equation conversion
 
 Copyright (c) 2013-2020 Khan Academy and other contributors
 

@@ -6,6 +6,7 @@ import { overlayQuestionBoxes, parseQuestionContent, questionPlainText, question
 import { hasDuplicatedStem, includesRecognizedChoices, numberedApiChoices, preserveQuestionParts } from './question-completeness';
 import { preserveSourceStructures } from './structure-completeness';
 import { mathQualityIssues } from './math-quality';
+import { preserveSourceTextFormatting } from './source-text-formatting';
 
 type NormalizedBox = [number, number, number, number];
 
@@ -97,7 +98,7 @@ export async function enhanceQuestionsWithVision(
       // Diagnostics contain no exam text, images, provider URLs, or credentials.
       console.info('[recognition-structure]', { number: question.number, source: completion.source, warning: Boolean(completion.warning) });
       const assessmentText = completion.source === 'original' ? question.assessmentText : question.sharedPassage
-        ? normalizeQuestionText([recognized.indirectStem,recognized.directStem,...numberedApiChoices(recognized.choices)].filter(s=>typeof s==='string').join('\n'))
+        ? preserveSourceTextFormatting(normalizeQuestionText([recognized.indirectStem,recognized.directStem,...numberedApiChoices(recognized.choices)].filter(s=>typeof s==='string').join('\n')), question.assessmentText ?? question.text)
         : completion.text;
       const assessmentIssues = mathQualityIssues(assessmentText ?? '');
       if (assessmentIssues.length) warnings.push(`${question.number}번 개별 발문: ${assessmentIssues.map(issue=>issue.message).join(' ')}`);
@@ -185,6 +186,7 @@ function completeQuestionText(original: string, recognized: VisionItem) {
     } else warning=[warning,...mathIssues.map(issue=>issue.message),hasDuplicatedStem(text)?'발문 전체가 반복되어 있습니다. 원문과 비교해 주세요.':''].filter(Boolean).join(' ');
   }
   warning = [warning, glyphWarning(text)].filter(Boolean).join(' ');
+  text = preserveSourceTextFormatting(text, normalizedOriginal);
   return { text, source, warning };
 }
 

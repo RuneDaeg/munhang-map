@@ -1,7 +1,7 @@
 export type TextRun = { text: string; bold: boolean; underline: boolean };
-const tag = /<\/?(?:b|u)>/g;
+const tag = /<\/?(?:b|u)>|\[\/?(?:b|u)\]/g;
 
-/** Only balanced b/u tags are formatting. All other input remains escaped text. */
+/** Only balanced b/u tags (including legacy bracket tags) are formatting. */
 export function textRuns(source: string): TextRun[] {
   const stack: string[] = [];
   const runs: TextRun[] = [];
@@ -103,7 +103,7 @@ export function plainToSource(source: string, offset: number) {
     return Math.min(offset, source.length);
   let plain = 0;
   for (let i = 0; i < source.length;) {
-    const token = source.slice(i).match(/^<\/?[bu]>/)?.[0];
+    const token = source.slice(i).match(/^(?:<\/?[bu]>|\[\/?[bu]\])/)?.[0];
     if (token) {
       i += token.length;
       continue;
@@ -124,7 +124,7 @@ export function splitFormattedText(
     return [source.slice(0, position), source.slice(position)];
   const plainOffset = source
     .slice(0, position)
-    .replace(/<\/?[bu]>/g, '').length;
+    .replace(tag, '').length;
   const left: TextRun[] = [],
     right: TextRun[] = [];
   let at = 0;

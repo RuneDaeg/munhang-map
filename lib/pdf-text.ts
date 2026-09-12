@@ -1,7 +1,7 @@
 import type { PageText } from './pdf-layout';
 import type { Rule } from './pdf-structures';
 import { reconstructMathRuns } from './pdf-math-layout';
-import { inferPdfTextStyles } from './pdf-source-formatting';
+import { inferPdfMathUnderlines, inferPdfTextStyles } from './pdf-source-formatting';
 
 type TextItem = {
   str: string;
@@ -433,7 +433,7 @@ export function extractPositionedText(
   // If a future geometry change violates source conservation, retain the source.
   const restored = math.sourceConserved ? math.items : styled;
   return {
-    items: restored.map(
+    items: inferPdfMathUnderlines(restored, rules).map(
       ({ text, x, y, width, height, mathRole, sourceBounds, bold, underline }) => ({
         text,
         x,

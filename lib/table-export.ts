@@ -7,6 +7,7 @@ import {
 } from './question-content';
 import { textRuns, unformattedText } from './text-formatting';
 import { latexToOmml } from './docx-math';
+import { measureHwpxMath } from './hwpx-math';
 import { hasUnbalancedMathDelimiters, mathForRendering, splitMathText } from './math-normalization';
 
 const escapeXml = (value: string) =>
@@ -63,7 +64,7 @@ function docxParagraph(
   if (hasUnbalancedMathDelimiters(text) && /(?<!\\)\$(?=[A-Za-z\\{]|[^$\n]*[_^\\])/.test(text)) {
     throw new Error('한 줄 수식의 $ 구분자를 확인해 주세요. 여러 줄 수식에는 $$...$$를 사용해 주세요.');
   }
-  if (splitMathText(text).some((part) => part.math && /<\/?(?:b|u)>/.test(part.text))) {
+  if (splitMathText(text).some((part) => part.math && /<\/?(?:b|u)>|\[\/?(?:b|u)\]/.test(part.text))) {
     throw new Error('수식 일부에 적용된 굵게·밑줄을 해제하고, $...$ 수식 전체를 선택해 서식을 적용해 주세요.');
   }
   const runs = textRuns(text)
@@ -164,6 +165,21 @@ type HwpxContext = {
   headerBorder: number;
 };
 
+// HWPX math is an inline object. Reserve space for its fraction/root/script
+// height as well as prose wrapping; Hancom recalculates the final object size.
+function hwpxLineHeight(line: string, availableWidth: number): number {
+  let width = 0;
+  let height = 1600;
+  for (const part of splitMathText(unformattedText(line))) {
+    if (part.math) {
+      const size = measureHwpxMath(mathForRendering(part.text), { fontSizePt: 10, display: part.display });
+      width += size.width;
+      height = Math.max(height, size.height + 400);
+    } else width += approximateTextWidth(part.text, 0.6) * 1000;
+  }
+  return Math.max(1, Math.ceil(width / Math.max(1000, availableWidth))) * height;
+}
+
 export function hwpxQuestionContent(
   text: string,
   context: HwpxContext,
@@ -190,8 +206,7 @@ export function hwpxQuestionContent(
         );
       }
       if (block.kind === 'text')
-        return block.text
-          .split('\n')
+        return paragraphLines(block.text)
           .filter(Boolean)
           .map((line) => context.paragraph(line))
           .join('');
@@ -202,18 +217,7 @@ export function hwpxQuestionContent(
       const heights = rows.map((row) =>
         Math.max(
           ...row.map((cell, col) =>
-            cell.split('\n').reduce((height, line) => {
-              const textWidth =
-                approximateTextWidth(unformattedText(line), 0.6) * 1000;
-              return (
-                height +
-                Math.max(
-                  1,
-                  Math.ceil(textWidth / Math.max(1000, widths[col] - 1200)),
-                ) *
-                  1600
-              );
-            }, 1200),
+            paragraphLines(cell).reduce((height, line) => height + hwpxLineHeight(line, widths[col] - 1200), 1200),
           ),
         ),
       );
@@ -227,8 +231,7 @@ export function hwpxQuestionContent(
               .map((cell, c) => {
                 const header =
                   block.kind === 'table' && block.header && r === 0;
-                return `<hp:tc name="" header="${header ? 1 : 0}" hasMargin="1" protect="0" editable="0" dirty="1" borderFillIDRef="${header ? context.headerBorder : context.border}"><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${cell
-                  .split('\n')
+                return `<hp:tc name="" header="${header ? 1 : 0}" hasMargin="1" protect="0" editable="0" dirty="1" borderFillIDRef="${header ? context.headerBorder : context.border}"><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${paragraphLines(cell)
                   .map((line) => context.paragraph(line))
                   .join(
                     '',

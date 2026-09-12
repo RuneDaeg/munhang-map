@@ -19,6 +19,7 @@ type Item = {
   equation?: boolean;
   bold?: boolean;
   underline?: boolean;
+  sourceBounds?: { x: number; y: number; width: number; height: number };
 };
 const identity = () => [1, 0, 0, 1, 0, 0];
 const mul = (a: Matrix, b: Matrix) => [
@@ -186,24 +187,14 @@ export function syntheticBoldAreas(
   return result;
 }
 
-/** Attach metadata to raw-text items. Serialization, not geometry matching, emits tags. */
-export function inferPdfTextStyles<T extends Item>(
-  items: T[],
-  rules: Rule[],
-  list: Operators,
-  ops: Record<string, number>,
-  viewport: Matrix,
-  getFont: (id: string) => Font | undefined,
-): T[] {
-  const painted = syntheticBoldAreas(list, ops, viewport);
-  const fontCache = new Map<string, boolean>();
+function openUnderlines(rules: Rule[]) {
   const vertical = rules.filter(
     (r) => Math.abs(r.x1 - r.x2) < 1 && r.y2 - r.y1 > 3,
   );
   const horizontal = rules.filter(
     (r) => Math.abs(r.y1 - r.y2) < 0.7 && r.x2 - r.x1 > 3,
   );
-  const underlines = horizontal.filter((r) => {
+  return horizontal.filter((r) => {
     const joins = vertical.filter(
       (v) =>
         v.y1 <= r.y1 + 1.5 &&
@@ -218,6 +209,27 @@ export function inferPdfTextStyles<T extends Item>(
         .some((b) => Math.abs(a.x1 - b.x1) > (r.x2 - r.x1) * 0.7),
     );
   });
+}
+
+function coversUnderline(item: Item, rule: Rule, baseline = item.baseline ?? item.y + item.height) {
+  const dy = rule.y1 - baseline;
+  const overlap = Math.min(item.x + item.width, rule.x2) - Math.max(item.x, rule.x1);
+  // Some writers position a rule below the descender, roughly one third of an em.
+  return dy >= -0.02 * item.height && dy <= 0.36 * item.height && overlap >= item.width * 0.85;
+}
+
+/** Attach metadata to raw-text items. Serialization, not geometry matching, emits tags. */
+export function inferPdfTextStyles<T extends Item>(
+  items: T[],
+  rules: Rule[],
+  list: Operators,
+  ops: Record<string, number>,
+  viewport: Matrix,
+  getFont: (id: string) => Font | undefined,
+): T[] {
+  const painted = syntheticBoldAreas(list, ops, viewport);
+  const fontCache = new Map<string, boolean>();
+  const underlines = openUnderlines(rules);
   return items.map((item) => {
     if (item.equation) return { ...item };
     const fontName = item.fontName ?? '';
@@ -238,20 +250,30 @@ export function inferPdfTextStyles<T extends Item>(
           item.x >= a.x - 0.8 &&
           item.x + item.width <= a.right + 1.2,
       );
-    const underline = underlines.some((r) => {
-      const dy = r.y1 - baseline,
-        overlap = Math.min(item.x + item.width, r.x2) - Math.max(item.x, r.x1);
-      return (
-        dy >= -0.02 * item.height &&
-        dy <= 0.28 * item.height &&
-        overlap >= item.width * 0.85
-      );
-    });
+    const underline = underlines.some((r) => coversUnderline(item, r));
     return {
       ...item,
       ...(bold ? { bold: true } : {}),
       ...(underline ? { underline: true } : {}),
     };
+  });
+}
+
+/** Underline a complete formula only when it continues a proven prose underline. */
+export function inferPdfMathUnderlines<T extends Item>(items: T[], rules: Rule[]): T[] {
+  const underlines = openUnderlines(rules);
+  return items.map((item) => {
+    if (!item.equation) return item;
+    const bounds = item.sourceBounds ?? item;
+    const bottom = bounds.y + bounds.height;
+    const underline = underlines.some((rule) =>
+      coversUnderline(item, rule, bottom) &&
+      items.some((neighbor) =>
+        !neighbor.equation && neighbor.underline && coversUnderline(neighbor, rule) &&
+        Math.min(Math.abs(neighbor.x + neighbor.width - item.x), Math.abs(item.x + item.width - neighbor.x)) <= Math.max(item.height, neighbor.height) * 1.6,
+      ),
+    );
+    return underline ? { ...item, underline: true } : item;
   });
 }
 
@@ -281,7 +303,6 @@ export function detectRangeBrackets<T extends Item>(items: T[], rules: Rule[]) {
   }> = [];
   for (const label of items.filter((i) => /^\[[A-Z]\]$/.test(i.text.trim()))) {
     const cx = label.x + label.width / 2,
-      cy = label.y + label.height / 2,
       h = label.height;
     const above = vertical.filter(
       (r) =>
