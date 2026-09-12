@@ -18,6 +18,7 @@ import {
   MoreHorizontal,
   PanelLeft,
   ScanSearch,
+  ShieldAlert,
   Sparkles,
   Upload,
 } from 'lucide-react';
@@ -280,6 +281,7 @@ export default function Home() {
       const message = [
         `${question.number}번 문항의 캡처 이미지와 추출문을 ${connection.providerLabel || '연결된 AI 공급자'}에 전송하여 판독할까요?`,
         '해당 문항에 연결된 공통 지문도 포함될 수 있습니다. API 요금이 발생할 수 있으며 판독 결과로 현재 내용을 갱신합니다.',
+        '미공개 시험지·개인정보 등 외부 반출 금지 자료라면 취소하세요. API 키를 로컬에 저장해도 판독 자료는 선택한 공급자 또는 설정한 서버로 전송됩니다.',
         ...(question.textEdited ? ['직접 편집한 내용이 있습니다. 계속하기 전에 검토 파일 저장을 권장합니다.'] : []),
       ].join('\n\n');
       if (!window.confirm(message)) return;
@@ -316,6 +318,7 @@ export default function Home() {
       if (!window.confirm([
         `현재 시험지 전체 ${snapshot.length}문항의 캡처 이미지와 추출문을 ${connection.providerLabel || '연결된 AI 공급자'}에 전송하여 판독할까요?`,
         `문항마다 순서대로 요청하며 최대 ${snapshot.length}회의 API 판독 비용이 발생할 수 있습니다. 연결된 공통 지문도 포함될 수 있습니다. 이미 판독한 문항도 다시 요청합니다.`,
+        '미공개 시험지·개인정보 등 외부 반출 금지 자료라면 취소하세요. API 키를 로컬에 저장해도 판독 자료는 선택한 공급자 또는 설정한 서버로 전송됩니다.',
         '진행 중 중단하면 현재 요청까지만 마칩니다. 이미 전송된 요청에는 비용이 발생할 수 있습니다. 완료된 결과는 유지하고, 실패하면 다음 요청을 멈춥니다.',
         ...(edited ? [`직접 편집한 문항이 ${edited}개 있습니다. 결과로 갱신하기 전에 검토 저장으로 백업하는 것을 권장합니다.`] : []),
       ].join('\n\n'))) return;
@@ -399,6 +402,17 @@ export default function Home() {
           <Button variant="ghost" size="icon" aria-label="도움말"><CircleHelp /></Button>
         </div>
       </header>
+
+      <div className="mx-auto max-w-[1540px] px-4 pt-4 lg:px-6 lg:pt-6">
+        <div id="document-security-warning" role="note" aria-labelledby="document-security-title" className="flex items-start gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-amber-950">
+          <ShieldAlert aria-hidden="true" className="mt-0.5 size-5 shrink-0" />
+          <div className="min-w-0 text-sm leading-relaxed">
+            <h2 id="document-security-title" className="font-bold">외부 반출 금지 문서를 넣지 마세요</h2>
+            <p className="mt-1">미공개 시험지·출제 중 문항·개인정보·기관 기밀 등 외부 전송이 금지된 자료는 사용하지 마세요. API 판독 시 문항 캡처와 추출문(공통 지문 포함)이 선택한 AI 공급자 또는 설정한 서버로 전송됩니다.</p>
+            <p className="mt-1 text-xs">최초 PDF 분석은 로컬 처리이며, API 판독은 별도 실행·확인 후 전송합니다. 키를 로컬에 저장해도 문서 전송을 막아주지는 않습니다. 문항맵은 반출 금지 여부를 자동 판별하지 않습니다.</p>
+          </div>
+        </div>
+      </div>
 
       <section className="mx-auto grid max-w-[1540px] gap-4 p-4 lg:grid-cols-[270px_minmax(0,1fr)] lg:p-6">
         <aside aria-label="현재 PDF·API 설정" className="workspace-sidebar rounded-[22px] p-5 text-white lg:sticky lg:top-[88px] lg:h-[calc(100vh-112px)] lg:overflow-y-auto">

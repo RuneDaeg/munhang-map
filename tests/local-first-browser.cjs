@@ -76,6 +76,9 @@ async function main() {
     });
     await page.goto(origin);
     await expect(page.getByRole('heading', { name: '문항과 성취기준을 확인하세요' })).toBeVisible();
+    await expect(page.locator('#document-security-warning')).toBeVisible();
+    await expect(page.locator('#document-security-warning')).toContainText('외부 반출 금지 문서를 넣지 마세요');
+    await expect(page.locator('#document-security-warning')).toContainText('최초 PDF 분석은 로컬 처리');
     await expect(page.getByText('선택 문항 API 연결됨 · 대기', { exact: true })).toBeVisible();
     await expect(page.getByText('첫 분석은 로컬 · 자동 API 판독 꺼짐', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '이 문항만 API로 판독', exact: true })).toBeDisabled();
@@ -107,6 +110,7 @@ async function main() {
     assert.match(dialogMessage, /검증용 연결/);
     assert.match(dialogMessage, /API 요금/);
     assert.match(dialogMessage, /공통 지문/);
+    assert.match(dialogMessage, /외부 반출 금지 자료라면 취소/);
     assert.equal(result.acceptedRequests.length, 0, 'Cancelling must send no recognition request');
     result.cancelledRequests = 0;
 
@@ -150,6 +154,7 @@ async function main() {
     assert.match(dialogMessage, new RegExp(`전체 ${total}문항`));
     assert.match(dialogMessage, /검증용 연결/);
     assert.match(dialogMessage, /API 판독 비용/);
+    assert.match(dialogMessage, /외부 반출 금지 자료라면 취소/);
     assert.match(dialogMessage, /직접 편집한 문항/);
     assert.equal(result.acceptedRequests.length, 2);
     result.bulkCancelRequests = 0;

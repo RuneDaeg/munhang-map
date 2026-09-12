@@ -8,7 +8,7 @@
       :root { color-scheme: light; font-family: Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
       * { box-sizing: border-box; }
       body { margin: 0; min-height: 100vh; background: #edf6fb; color: #102638; }
-      header { height: 68px; display: flex; align-items: center; justify-content: space-between; padding: 0 max(24px, calc((100vw - 960px) / 2)); background: #063957; color: white; }
+      header { min-height: 68px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; padding: 16px max(24px, calc((100vw - 960px) / 2)); background: #063957; color: white; }
       .brand { display: flex; align-items: center; gap: 12px; font-size: 18px; font-weight: 800; }
       .mark { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 11px; background: #41d9ab; color: #063957; }
       header a { color: white; font-size: 14px; font-weight: 700; text-decoration: none; }
@@ -43,7 +43,23 @@
       dd { margin: 0; text-align: right; font-weight: 750; overflow-wrap: anywhere; }
       .notice { margin-top: 18px; padding: 14px; border-radius: 14px; background: #eef9f5; color: #2c6655; font-size: 13px; line-height: 1.6; }
       .reset { width: 100%; margin-top: 14px; }
-      @media (max-width: 760px) { main { grid-template-columns: 1fr; } .grid { grid-template-columns: 1fr; } .full { grid-column: auto; } }
+      .document-warning { grid-column: 1 / -1; padding: 20px 24px; border: 1px solid #d39b39; border-left: 5px solid #b86b08; border-radius: 16px; background: #fff6df; }
+      .document-warning h2 { margin-bottom: 8px; color: #783d00; }
+      .document-warning p { color: #6b470f; }
+      .document-warning p + p { margin-top: 8px; }
+      .key-guide { padding: 16px; border: 1px solid #d4e3eb; border-radius: 14px; background: #f6fafc; }
+      .key-guide h2 { margin-bottom: 6px; font-size: 16px; }
+      .key-guide details { margin-top: 12px; border: 1px solid #d4e3eb; border-radius: 10px; background: white; }
+      .key-guide summary { padding: 13px; color: #164c6a; font-size: 14px; font-weight: 750; cursor: pointer; }
+      .key-guide summary:focus-visible, a:focus-visible, button:focus-visible { outline: 3px solid #159571; outline-offset: 3px; }
+      .guide-content { padding: 0 13px 14px; }
+      .guide-content ol { margin: 0; padding-left: 22px; color: #29495c; font-size: 14px; line-height: 1.7; }
+      .guide-content li + li { margin-top: 6px; }
+      .key-guide a { color: #075486; text-underline-offset: 3px; overflow-wrap: anywhere; }
+      .guide-links { margin-top: 10px; }
+      .key-security { margin-top: 14px; }
+      .source-date { margin-top: 8px; font-size: 12px; }
+      @media (max-width: 760px) { main { grid-template-columns: 1fr; margin-top: 20px; } .grid { grid-template-columns: 1fr; } .full { grid-column: auto; } .form-card { padding: 20px; } .document-warning { padding: 18px; } }
     </style>
   </head>
   <body>
@@ -52,14 +68,60 @@
       <a href="/">문항맵으로 돌아가기 →</a>
     </header>
     <main>
+      <aside id="document-security-warning" class="document-warning" role="note" aria-labelledby="document-security-title">
+        <h2 id="document-security-title">외부 반출 금지 문서를 넣지 마세요</h2>
+        <p>미공개 시험지·출제 중 문항·개인정보·기관 기밀 등 외부 전송이 금지된 자료는 사용하지 마세요. API 판독을 실행하면 <strong>문항 캡처 이미지·추출 텍스트·공통 지문</strong>이 선택한 AI 공급자 또는 설정한 서버로 전송됩니다.</p>
+        <p>PDF 최초 분석은 로컬에서 진행되며, 개별·전체 문항 API 판독을 확인한 뒤 전송됩니다. <strong>API 키를 내 컴퓨터에 저장해도 문서의 외부 전송을 막아 주지는 않습니다.</strong> 이 경고는 문서의 반출 금지 여부를 자동 판별하거나 전송을 차단하는 기능이 아닙니다.</p>
+      </aside>
       <section class="form-card">
         <h1>AI 공급자 연결</h1>
-        <p>키는 이 브라우저에 저장하지 않습니다. macOS에서는 키체인에 보관하고, PDF 페이지는 선택한 공급자에게만 전송합니다.</p>
+        <p>API 키는 브라우저 저장소가 아닌 이 컴퓨터의 문항맵 로컬 서버가 관리합니다. 실제 저장 방식은 오른쪽 ‘저장 위치’에서 확인하세요. 연결 저장만으로 문서가 API로 전송되지는 않습니다.</p>
         <form id="form">
           <div class="grid">
             <label class="full">API 공급자
               <select id="provider" name="provider"></select>
             </label>
+            <div id="api-key-guide" class="key-guide full" aria-labelledby="api-key-guide-title">
+              <h2 id="api-key-guide-title">API 키 발급 방법</h2>
+              <p>처음 연결하시나요? 공급자를 선택하면 해당 안내가 열립니다. 다른 공급자 안내도 눌러서 펼칠 수 있습니다. 아래 공식 사이트 링크는 새 탭에서 열립니다.</p>
+              <details id="key-guide-openai" data-provider="openai" open>
+                <summary>OpenAI API 키 발급</summary>
+                <div class="guide-content">
+                  <ol>
+                    <li><a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">OpenAI API 키 관리</a>에 로그인합니다. 계정이 없다면 가입합니다.</li>
+                    <li>사용할 프로젝트의 API keys 화면에서 새 API 키를 만들고 복사합니다.</li>
+                    <li>이 화면에서 공급자를 <strong>OpenAI</strong>로 선택하고, 아래 API 키 입력란에 붙여 넣습니다. 모델·사용 예산을 확인한 뒤 <strong>연결 저장</strong>을 누릅니다.</li>
+                  </ol>
+                  <p class="guide-links"><a href="https://developers.openai.com/api/docs/quickstart" target="_blank" rel="noopener noreferrer">OpenAI Docs · 공식 시작 안내</a></p>
+                </div>
+              </details>
+              <details id="key-guide-anthropic" data-provider="anthropic">
+                <summary>Anthropic Claude API 키 발급</summary>
+                <div class="guide-content">
+                  <ol>
+                    <li><a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener noreferrer">Claude Console API 키 관리</a>에 로그인하고, Settings → API keys → Create key로 이동합니다.</li>
+                    <li>키 이름과 만료 기간을 정합니다. 개인용은 Linked account에서 본인을 선택하고, <strong>사용할 워크스페이스 하나로 범위를 지정</strong>한 키를 만듭니다.</li>
+                    <li>키를 복사하고 이 화면에서 <strong>Anthropic Claude</strong>를 선택합니다. 아래 API 키 입력란에 붙여 넣고 모델·사용 예산을 확인한 뒤 <strong>연결 저장</strong>을 누릅니다.</li>
+                  </ol>
+                  <p class="hint">문항맵은 워크스페이스 ID를 별도로 입력받지 않으므로, 워크스페이스가 지정된 키를 사용하세요.</p>
+                  <p class="guide-links"><a href="https://platform.claude.com/docs/en/manage-claude/authentication" target="_blank" rel="noopener noreferrer">Claude · 공식 인증 안내</a></p>
+                </div>
+              </details>
+              <details id="key-guide-gemini" data-provider="gemini">
+                <summary>Google Gemini API 키 발급</summary>
+                <div class="guide-content">
+                  <ol>
+                    <li><a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">Google AI Studio API 키 관리</a>에 Google 계정으로 로그인하고 필요한 약관을 확인합니다.</li>
+                    <li>사용 권한이 있는 Google Cloud 프로젝트를 선택하거나 만듭니다. 기존 프로젝트가 보이지 않으면 Dashboard → Projects → Import projects에서 가져옵니다.</li>
+                    <li>API Keys에서 Create API key로 키를 만들고 복사합니다. 이 화면에서 <strong>Google Gemini</strong>를 선택해 아래 API 키 입력란에 붙여 넣고, 모델·사용 예산을 확인한 뒤 <strong>연결 저장</strong>을 누릅니다.</li>
+                  </ol>
+                  <p class="hint">키 생성 버튼이 없거나 권한 오류가 나면 프로젝트·기관 관리자에게 문의하세요. 오래된 키가 차단되면 공식 안내의 키 전환 절차를 확인하세요.</p>
+                  <p class="guide-links"><a href="https://ai.google.dev/gemini-api/docs/api-key" target="_blank" rel="noopener noreferrer">Gemini · 공식 API 키 안내</a></p>
+                </div>
+              </details>
+              <p class="key-security">API 키는 비밀번호처럼 관리하고 채팅·스크린샷·GitHub에 공개하지 마세요. 유출이 의심되면 공급자 콘솔에서 키를 폐기하고 새 키로 교체하세요. 요금·무료 할당·결제 필요 여부는 공급자 콘솔에서 직접 확인해 주세요.</p>
+              <p class="source-date">공식 문서 확인: 2026-09-12 · 메뉴 이름과 발급 절차는 공급자 변경에 따라 달라질 수 있습니다.</p>
+            </div>
             <label>모델 ID
               <input id="model" name="model" autocomplete="off" spellcheck="false" required />
             </label>
@@ -142,6 +204,9 @@
       provider.addEventListener('change', () => updateProviderFields(true));
       function updateProviderFields(useDefaults) {
         const info = providers[provider.value];
+        document.querySelectorAll('#api-key-guide details[data-provider]').forEach((guide) => {
+          guide.open = guide.dataset.provider === provider.value;
+        });
         document.querySelector('.custom-only').hidden = provider.value !== 'compatible';
         baseUrl.required = provider.value === 'compatible';
         if (useDefaults || !model.value) model.value = info.defaultModel;

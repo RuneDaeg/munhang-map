@@ -92,6 +92,8 @@ test('confirmed API action submits exactly the selected question after naming it
   assert.match(calls.confirmation[0], /캡처 이미지.*추출문/);
   assert.match(calls.confirmation[0], /공통 지문/);
   assert.match(calls.confirmation[0], /요금/);
+  assert.match(calls.confirmation[0], /외부 반출 금지 자료라면 취소/);
+  assert.match(calls.confirmation[0], /API 키를 로컬에 저장해도 판독 자료는/);
   assert.equal(state.current[0].text, 'recognized question');
   assert.equal(state.current[0].textEdited, false);
   assert.equal(state.current[1], other);
