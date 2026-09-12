@@ -190,7 +190,6 @@ export default function Home() {
         setAnalysisState(progress); setAnalysisProgress(progress.percent); setVisionProgress(progress.detail);
       });
       setPageCount(result.pageCount); setSourcePages(result.sourcePages); setStandards(result.catalog);
-      applyVisionStatus(result.vision);
       setQualityWarning(result.qualityWarning); setQuestionData(result.questions);
       setVisionProgress(''); setStatus('ready');
       void getVisionStatus().then(applyVisionStatus).catch(() => undefined);
@@ -261,15 +260,21 @@ export default function Home() {
 
   async function recognizeSelectedQuestion() {
     const question = questionData[selected];
-    if (!question?.sourcePageImage || recognizingQuestion !== null) return;
-    if(question.textEdited && !window.confirm('직접 편집한 내용이 있습니다. 현재 검토 파일을 저장한 후 다시 판독하는 것을 권장합니다. 현재 텍스트를 다시 판독한 결과로 바꿀까요?')) return;
+    if (!question?.questionCaptures?.length || operationRef.current || recognizingQuestion !== null || savingBank || status === 'analyzing') return;
+    operationRef.current = true;
     const targetIndex=selected;
     setRecognizingQuestion(question.number);
     setVisionError('');
     try {
-      const status = await getVisionStatus();
-      applyVisionStatus(status);
-      if (!status.available) throw new Error(status.desktop || status.local ? '먼저 API 연결을 설정해 주세요.' : '로컬 .env.local에 OPENAI_API_KEY를 설정한 뒤 개발 서버를 다시 시작해 주세요.');
+      const connection = await getVisionStatus();
+      applyVisionStatus(connection);
+      if (!connection.available) throw new Error(connection.desktop || connection.local ? '먼저 API 연결을 설정해 주세요. 기본 분석과 성취기준 추천은 API 없이 사용할 수 있습니다.' : '로컬 .env.local에 OPENAI_API_KEY를 설정한 뒤 개발 서버를 다시 시작해 주세요.');
+      const message = [
+        `${question.number}번 문항의 캡처 이미지와 추출문을 ${connection.providerLabel || '연결된 AI 공급자'}에 전송하여 판독할까요?`,
+        '해당 문항에 연결된 공통 지문도 포함될 수 있습니다. API 요금이 발생할 수 있으며 판독 결과로 현재 내용을 갱신합니다.',
+        ...(question.textEdited ? ['직접 편집한 내용이 있습니다. 계속하기 전에 검토 파일 저장을 권장합니다.'] : []),
+      ].join('\n\n');
+      if (!window.confirm(message)) return;
       const result = await enhanceQuestionsWithVision([question]);
       if (result.failures.length) throw new Error(result.failures[0]);
       if (result.warnings.length) setVisionError(result.warnings.join(' '));
@@ -279,9 +284,10 @@ export default function Home() {
       setQuestionData((current) => current.map((item, index) => index === targetIndex && item===question ? {...enhanced,textEdited:enhanced.text===question.text ? question.textEdited : false} : item));
       void getVisionStatus().then(applyVisionStatus).catch(() => undefined);
     } catch (reason) {
-      setVisionError(reason instanceof Error ? reason.message : '자동 인식을 완료하지 못했습니다.');
+      setVisionError(reason instanceof Error ? reason.message : '선택 문항의 API 판독을 완료하지 못했습니다.');
     } finally {
       setRecognizingQuestion(null);
+      operationRef.current = false;
     }
   }
 
@@ -345,7 +351,7 @@ export default function Home() {
       </header>
 
       <section className="mx-auto grid max-w-[1540px] gap-4 p-4 lg:grid-cols-[270px_minmax(0,1fr)] lg:p-6">
-        <aside className="workspace-sidebar rounded-[22px] p-5 text-white lg:sticky lg:top-[88px] lg:h-[calc(100vh-112px)]">
+        <aside aria-label="현재 PDF·API 설정" className="workspace-sidebar rounded-[22px] p-5 text-white lg:sticky lg:top-[88px] lg:h-[calc(100vh-112px)] lg:overflow-y-auto">
           <div className="flex items-center justify-between">
             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-white/55">현재 작업</p>
             <Button variant="ghost" size="icon-sm" className="text-white hover:bg-white/10 hover:text-white" aria-label="더보기"><MoreHorizontal /></Button>
@@ -375,13 +381,15 @@ export default function Home() {
             <div className="rounded-xl border border-white/10 bg-white/6 p-3">
               <div className="flex items-center gap-2">
                 <span className={`size-2 rounded-full ${visionAvailable ? 'bg-emerald-400' : 'bg-amber-300'}`} />
-                <p className="text-xs font-semibold text-white/80">자동 수식·그림 인식 {visionAvailable ? '사용 중' : '로컬 키 필요'}</p>
+                <p className="text-xs font-semibold text-white/80">선택 문항 API {visionAvailable ? '연결됨 · 대기' : '미연결'}</p>
               </div>
+              <p className="mt-2 text-sm font-semibold text-accent">첫 분석은 로컬 · 자동 API 판독 꺼짐</p>
+              <p className="mt-1 text-xs leading-5 text-white/65">문항 추출·캡처·성취기준 추천은 API 없이 진행합니다. 필요한 문항에서만 ‘이 문항만 API로 판독’을 누르세요.</p>
               <p className="mt-1 whitespace-pre-line text-xs leading-5 text-white/50">{visionAvailable
                 ? `${visionProvider || 'AI API'} · ${visionKeyHint || '서버 키'}\n${visionModel}`
                 : desktopMode || localMode
-                  ? 'API 연결을 설정하면 자동 판독을 사용할 수 있습니다.'
-                  : '.env.local에 OPENAI_API_KEY를 설정하면 활성화됩니다.'}</p>
+                  ? 'API 연결을 설정해도 선택 문항 판독을 실행하기 전에는 AI에 전송하지 않습니다.'
+                  : 'API를 설정하지 않아도 로컬 기본 분석을 사용할 수 있습니다.'}</p>
               {visionAvailable && visionUsage && <p className="mt-1 text-xs leading-5 text-white/65">토큰 {formatCompact(visionUsage.inputTokens + visionUsage.outputTokens)} · 앱 추정 ${visionUsage.estimatedUsd.toFixed(4)}{visionRemaining !== null ? ` · 잔액 $${visionRemaining.toFixed(4)}` : ''}</p>}
               {(desktopMode || localMode) && <button type="button" disabled={busy} onClick={() => void openApiConnectionSettings()} className="mt-2 text-xs font-semibold text-accent underline decoration-white/25 underline-offset-4 disabled:opacity-50">API 연결 {visionAvailable ? '변경·사용량 보기' : '설정'}</button>}
             </div>
@@ -400,7 +408,7 @@ export default function Home() {
           </div>
 
           <div className="mt-auto hidden pt-8 lg:block">
-            <p className="flex items-start gap-2 text-xs leading-5 text-white/45"><Sparkles className="mt-0.5 size-3.5 shrink-0 text-accent" /> 문항 전체 캡처는 브라우저에서 만듭니다. 자동 판독 사용 시 문항 캡처가 선택한 AI 공급자에게 전송됩니다.</p>
+            <p className="flex items-start gap-2 text-xs leading-5 text-white/45"><Sparkles className="mt-0.5 size-3.5 shrink-0 text-accent" /> 문항 전체 캡처는 브라우저에서 만듭니다. 선택 문항 API 판독을 확인하면 해당 캡처·추출문이 연결한 AI 공급자에게 전송되며 요금이 발생할 수 있습니다.</p>
           </div>
         </aside>
 
@@ -409,7 +417,7 @@ export default function Home() {
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <div>
                 <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">{status === 'analyzing' ? <LoaderCircle className="size-4 animate-spin text-primary" /> : <ScanSearch className="size-4 text-primary" />} {status === 'analyzing' ? (visionProgress || `PDF에서 문항을 찾는 중 · ${analysisProgress}%`) : status === 'error' ? '분석을 완료하지 못했습니다' : isDemo ? '예시 분석 결과' : '새 PDF 분석 완료'}</div>
-                <h1 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-[28px]">{status === 'analyzing' ? '문항·수식 분석을 진행하고 있습니다' : '문항과 성취기준을 확인하세요'}</h1>
+                <h1 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-[28px]">{status === 'analyzing' ? 'API 없이 문항을 분석하고 있습니다' : '문항과 성취기준을 확인하세요'}</h1>
                 {!isDemo && questionData.some((question) => question.examSubject) && <p className="mt-2 text-sm font-medium text-primary">시험지 상단 과목 반영: {[...new Set(questionData.map((question) => question.examSubject?.label).filter(Boolean))].join(' · ')}</p>}
                 {error && <p role="alert" className="mt-2 max-w-2xl text-sm font-medium leading-6 text-destructive">{error} 다른 PDF를 선택하면 새로 분석합니다.</p>}
                 {qualityWarning && <output className="mt-2 block max-w-2xl rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium leading-6 text-amber-800">{qualityWarning}</output>}
@@ -472,7 +480,7 @@ export default function Home() {
                     <div className="border-t bg-muted/35 px-4 py-3 text-center text-xs text-muted-foreground">문항 텍스트와 추천 성취기준은 내보내기 전에 직접 수정할 수 있습니다</div>
                   </div>
 
-                  {checkedQuestions[selected] && <QuestionInspector key={`${fileName}-${selected}`} question={checkedQuestions[selected]} catalog={standards} canMerge={selected > 0} recognizing={recognizingQuestion === checkedQuestions[selected].number} canEditCapture={!busy && sourcePages.length > 0} onEditCapture={() => setEditingCapture(selected)} onTextChange={updateSelectedText} onStandardChange={updateSelectedStandard} onSubjectChange={updateSelectedSubject} onRefresh={refreshSelectedCandidates} onRecognize={() => void recognizeSelectedQuestion()} onSplit={splitSelectedQuestion} onMerge={mergeWithPrevious} />}
+                  {checkedQuestions[selected] && <QuestionInspector key={`${fileName}-${selected}`} question={checkedQuestions[selected]} catalog={standards} canMerge={selected > 0} recognizing={recognizingQuestion === checkedQuestions[selected].number} canRecognize={!busy && Boolean(checkedQuestions[selected].questionCaptures?.length)} canEditCapture={!busy && sourcePages.length > 0} onEditCapture={() => setEditingCapture(selected)} onTextChange={updateSelectedText} onStandardChange={updateSelectedStandard} onSubjectChange={updateSelectedSubject} onRefresh={refreshSelectedCandidates} onRecognize={() => void recognizeSelectedQuestion()} onSplit={splitSelectedQuestion} onMerge={mergeWithPrevious} />}
                 </div>
               </TabsContent>
 
@@ -504,11 +512,12 @@ export default function Home() {
   );
 }
 
-function QuestionInspector({ question, catalog, canMerge, recognizing, canEditCapture, onEditCapture, onTextChange, onStandardChange, onSubjectChange, onRefresh, onRecognize, onSplit, onMerge }: {
+function QuestionInspector({ question, catalog, canMerge, recognizing, canRecognize, canEditCapture, onEditCapture, onTextChange, onStandardChange, onSubjectChange, onRefresh, onRecognize, onSplit, onMerge }: {
   question: AnalyzedQuestion;
   catalog: StandardRecord[];
   canMerge: boolean;
   recognizing: boolean;
+  canRecognize: boolean;
   canEditCapture: boolean;
   onEditCapture: () => void;
   onTextChange: (text: string) => void;
@@ -590,10 +599,11 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canEditCa
           <Button variant="outline" size="sm" onClick={() => insertLatex('\n:::box <보기>\nㄱ. 보기 내용\nㄴ. 보기 내용\n:::\n')}>보기 상자 삽입</Button>
           <Button variant="outline" size="sm" onClick={() => insertLatex('\n:::table\n| 구분 | 값 |\n| --- | --- |\n| A | 10 |\n| B | 20 |\n:::\n')}>자료표 삽입</Button>
         </div>
-        <p className="mt-2 text-xs leading-5 text-muted-foreground">AI의 구조 정보로 자료 상자·보기를 한 칸 표로, 행·열 자료를 여러 칸 표로 만듭니다. 표식이 없어도 명확한 보기 목록은 자동으로 묶습니다. 위 미리보기에서 원문과 비교하세요. 편집칸의 :::는 상자 경계, |는 셀 구분이며 문서에는 실제 표로 저장됩니다.</p>
-        <Button variant="outline" className="mt-3 w-full" disabled={recognizing || !question.sourcePageImage} onClick={onRecognize}>
-          {recognizing ? <LoaderCircle className="animate-spin" /> : <Sparkles />} {recognizing ? '발문·수식 판독 중…' : '문항 전체에서 발문·수식 다시 판독'}
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">로컬 추출이나 API 판독의 구조 정보로 자료 상자·보기를 한 칸 표로, 행·열 자료를 여러 칸 표로 만듭니다. 표식이 없어도 명확한 보기 목록은 자동으로 묶습니다. 위 미리보기에서 원문과 비교하세요. 편집칸의 :::는 상자 경계, |는 셀 구분이며 문서에는 실제 표로 저장됩니다.</p>
+        <Button variant="outline" className="mt-3 w-full" disabled={!canRecognize} onClick={onRecognize}>
+          {recognizing ? <LoaderCircle className="animate-spin" /> : <Sparkles />} {recognizing ? '이 문항 API 판독 중…' : '이 문항만 API로 판독'}
         </Button>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">API 판독은 선택 사항입니다. 실행 전 문항 캡처·추출문 전송과 비용 가능성을 확인합니다. 문항 캡처가 없으면 먼저 캡처 범위를 지정하세요.</p>
         <div className="mt-3 grid grid-cols-2 gap-2">
           <Button variant="outline" size="sm" disabled={cursor < 8 || cursor > question.text.length - 8} onClick={() => onSplit(cursor)}>커서에서 문항 나누기</Button>
           <Button variant="outline" size="sm" disabled={!canMerge} onClick={onMerge}>이전 문항과 합치기</Button>
