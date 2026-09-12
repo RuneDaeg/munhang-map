@@ -9,6 +9,8 @@ import type { ValidationFlag } from './question-validation';
 import { mapAssessment } from './assessment-mapping';
 import { imageTextStructures } from './pdf-raster-structures';
 import type { PdfStructure } from './pdf-structures';
+import { normalizeQuestionText } from './math-normalization';
+import { scienceAssessmentScope } from './science-assessment';
 
 export type StandardCandidate = {
   code: string;
@@ -144,18 +146,18 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
     if(visualChoices.length) warnings.push('그림형 선택지는 셀 배치와 빗금을 원본 이미지로 보존했습니다. 아래 선택지 캡처를 기준으로 확인하세요.');
     const structuredRegions = chunk.regions.map(region => {
       const source = geometry[region.page-1], page = pages[region.page-1];
-      return structureQuestionRegion(source.items,source.rules,region.box,page.width,page.height,source.rasterStructures);
+      return structureQuestionRegion(source.items,source.rules,region.box,page.width,page.height,source.rasterStructures,source.images);
     });
-    const structuredText = structuredRegions.map(region=>region.text).join('\n').replace(new RegExp(`^\\s*${chunk.number}\\s*[.)]\\s*`),'') || chunk.text;
-    const assessmentText = structuredRegions.slice(chunk.sharedRegionCount ?? 0).map(region=>region.text).join('\n')
-      .replace(new RegExp(`^\\s*${chunk.number}\\s*[.)]\\s*`),'');
+    const structuredText = normalizeQuestionText(structuredRegions.map(region=>region.text).join('\n').replace(new RegExp(`^\\s*${chunk.number}\\s*[.)]\\s*`),'') || chunk.text);
+    const assessmentText = normalizeQuestionText(structuredRegions.slice(chunk.sharedRegionCount ?? 0).map(region=>region.text).join('\n')
+      .replace(new RegExp(`^\\s*${chunk.number}\\s*[.)]\\s*`),''));
     questions.push(classifyQuestion({
       number: chunk.number,
       type: `자동 추출 문항 · ${chunk.page}쪽`,
       text: structuredText,
       assessmentText,
       sharedPassage: chunk.sharedPassage ? {...chunk.sharedPassage,
-        text:structuredRegions.slice(0,chunk.sharedRegionCount).map(region=>region.text).join('\n')} : undefined,
+        text:normalizeQuestionText(structuredRegions.slice(0,chunk.sharedRegionCount).map(region=>region.text).join('\n'))} : undefined,
       standardCode: '', standard: '', confidence: 0, domain: '',
       sourcePageImage: pageImages[chunk.page - 1],
       questionCaptures,
@@ -203,7 +205,8 @@ export function classifyQuestion(question: AnalyzedQuestion, catalog: StandardRe
   const selectedSubjectKey = subjectKey ?? question.selectedSubjectKey;
   const contextKeys = question.examSubject?.subjectKeys;
   const scopedCatalog = contextKeys?.length ? catalog.filter((item) => contextKeys.includes(`${item.school}|${item.subject}`) || `${item.school}|${item.subject}` === selectedSubjectKey) : catalog;
-  const rankedAll = scoreStandards(question.text, scopedCatalog.length ? scopedCatalog : catalog);
+  const scienceScope = scienceAssessmentScope(question, scopedCatalog, selectedSubjectKey);
+  const rankedAll = scoreStandards(question.text, scienceScope?.catalog ?? (scopedCatalog.length ? scopedCatalog : catalog));
   const subjectScores = new Map<string, { label: string; score: number }>();
   for (const item of rankedAll) {
     const key = `${item.standard.school}|${item.standard.subject}`;
@@ -221,9 +224,10 @@ export function classifyQuestion(question: AnalyzedQuestion, catalog: StandardRe
     standard: standard.statement,
     domain: `${standard.school} · ${standard.subject}`,
     confidence: scoreToConfidence(score),
+    ...(scienceScope ? { reason: scienceScope.reason } : {}),
   }));
   const best = standardCandidates[0];
-  return { ...question, selectedSubjectKey, standardCode: best?.code ?? '', standard: best?.standard ?? '해당 없음 · 교과를 확인해 주세요.', confidence: best?.confidence ?? 0, domain: best?.domain ?? '', standardCandidates, subjectCandidates, mappingArea:undefined, mappingReason:undefined, validationFlags:undefined };
+  return { ...question, selectedSubjectKey, standardCode: best?.code ?? '', standard: best?.standard ?? '해당 없음 · 교과를 확인해 주세요.', confidence: scienceScope ? 0 : best?.confidence ?? 0, domain: best?.domain ?? question.examSubject?.label ?? '', standardCandidates, subjectCandidates, mappingArea:scienceScope?.area, mappingReason:scienceScope ? scienceScope.reason + (!best ? ' 선택한 과목의 목록에 맞는 기준이 없어 판단을 보류합니다.' : '') : undefined, validationFlags:undefined };
 }
 
 export function splitIntoQuestions(pages: string[][]): QuestionChunk[] {

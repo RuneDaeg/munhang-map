@@ -243,20 +243,31 @@ test(
         page.width,
         page.height,
       );
-      assert.match(result.text, /거리 L/);
+      // Source-preserving upright/italic runs now use transparent math
+      // wrappers. Remove only these exact letter styles inside simple inline
+      // math; retain every digit, decimal point, sign and unit character.
+      const sourceCharacters = (text) => text.replace(/\$([^$\n]+)\$/g, (whole, math) =>
+        /^(?:[A-Za-z0-9.\s]|\\(?:mathrm|mathit)\{[A-Za-z]+\})+$/.test(math)
+          ? math.replace(/\\(?:mathrm|mathit)\{([A-Za-z]+)\}/g, '$1')
+          : whole);
+      assert.match(sourceCharacters(result.text), /거리 L/);
       assert.deepEqual(
         result.structures
           .find((s) => s.kind === 'table')
           .rows.slice(1)
-          .map((row) => row.slice(1)),
+          .map((row) => row.slice(1).map(sourceCharacters)),
         [
           ['65.0cm', '7.2m', '780.0cm', '7502.1mm'],
           ['70.0cm', '8.0m', '770.0cm', '7502.1mm'],
           ['75.0cm', '6.5m', '750.0cm', '7502.1mm'],
         ],
       );
+      // Native math can split a numeric quantity over adjacent m:t runs.
+      // Compare their exact visible characters, not serialized XML adjacency.
+      const exported = docxQuestionContent(result.text);
+      const exportedCharacters = Array.from(exported.matchAll(/<(?:w|m):t\b[^>]*>([^<]*)<\/(?:w|m):t>/g), (match) => match[1]).join('');
       for (const value of ['65.0cm', '7.2m', '7502.1mm'])
-        assert.ok(docxQuestionContent(result.text).includes(value));
+        assert.ok(exportedCharacters.includes(value));
     } finally {
       await pdf.destroy();
     }

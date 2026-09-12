@@ -1,3 +1,4 @@
+/* oxlint-disable typescript/no-require-imports */
 require('./load-typescript.cjs');
 const test = require('node:test'),
   assert = require('node:assert/strict');
@@ -238,4 +239,15 @@ test('visual choices use composed-page image bounds and refuse partial five-opti
     locateVisualChoices(items.slice(1), images, [0, 0, 1, 1], 200, 300),
     [],
   );
+});
+
+test('visual-choice white image padding cannot include the next row label', () => {
+  const items = Array.from({ length: 5 }, (_, i) => item('①②③④⑤'[i], 25, 20 + i * 50, 8));
+  const images = items.map((m, i) => ({ id: `graph-${i}`, x: 40, y: m.y - 2, width: 60, height: 51 }));
+  const choices = locateVisualChoices(items, images, [0, 0, 1, 1], 200, 300);
+  assert.equal(choices.length, 5);
+  choices.slice(0, 4).forEach((choice, index) => {
+    assert.ok((choice.box[1] + choice.box[3]) * 300 < items[index + 1].y);
+    assert.ok(choice.box[3] * 300 > 45, 'do not arbitrarily shrink the actual graph');
+  });
 });

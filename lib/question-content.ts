@@ -9,6 +9,33 @@ export type QuestionBlock =
 const MAX_ROWS = 80;
 const MAX_COLUMNS = 16;
 
+function encodeTableCell(value: string) {
+  return value.replace(/\n/g, '<br>').replace(/(?<!\\)\|/g, '\\|');
+}
+
+function hasMathCellNewline(value: string) {
+  if (!value.includes('\n')) return false;
+  // Keep the pre-existing rejection for multi-line equation sources. A cell
+  // paragraph break is supported only outside equations; explicit TeX \\\
+  // row separators on a single source line remain untouched.
+  if (/\\begin\{/.test(value)) return true;
+  let delimiter = '';
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i];
+    if (char === '\n' && delimiter) return true;
+    if (char === '\\') {
+      const next = value[++i];
+      if (next === '(' || next === '[') delimiter ||= `\\${next}`;
+      else if ((next === ')' && delimiter === '\\(') || (next === ']' && delimiter === '\\[')) delimiter = '';
+    } else if (char === '$') {
+      const token = value[i + 1] === '$' ? '$$' : '$';
+      if (token === '$$') i++;
+      delimiter = delimiter === token ? '' : delimiter || token;
+    }
+  }
+  return false;
+}
+
 /** Recover a labelled Korean option list, not arbitrary rectangles or prose. */
 function recoverViewBoxes(text: string): QuestionBlock[] {
   if (text.includes(':::')) return [{ kind: 'text', text }];
@@ -81,6 +108,11 @@ export function splitTableRow(line: string): string[] | null {
       if (delimiter === '$$') i += 1;
       math = math === delimiter ? '' : math || delimiter;
       cell += delimiter;
+    } else if (!math && value.startsWith('<br>', i)) {
+      // Only this exact token, only inside a table cell. All other HTML remains
+      // literal escaped text, and TeX spans keep their own line structure.
+      cell += '\n';
+      i += 3;
     } else if (char === '|' && !math) {
       cells.push(cell.trim());
       cell = '';
@@ -245,7 +277,8 @@ export function questionTextFromBlocks(
             row.some(
               (cell) =>
                 typeof cell !== 'string' ||
-                /[\r\n]/.test(cell) ||
+                /\r/.test(cell) ||
+                hasMathCellNewline(cell) ||
                 cell.includes(':::'),
             ),
         )
@@ -254,7 +287,7 @@ export function questionTextFromBlocks(
       // Escape literal cell separators (including math delimiters); the parser restores them once.
       const lines = (rows as string[][]).map(
         (row) =>
-          `| ${row.map((cell) => cell.replace(/(?<!\\)\|/g, '\\|')).join(' | ')} |`,
+          `| ${row.map(encodeTableCell).join(' | ')} |`,
       );
       if (block.header)
         lines.splice(1, 0, `| ${first.map(() => '---').join(' | ')} |`);

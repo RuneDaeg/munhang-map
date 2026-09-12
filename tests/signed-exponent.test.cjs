@@ -134,7 +134,8 @@ test('provided physics PDF: page 4 decodes q17 as one signed power', {
       (id) => page.commonObjs.get(id), rules);
     const equation = result.items.find((r) => r.text.includes('1.66'));
     assert.ok(equation);
-    assert.equal(equation.text, '$1.66×10^{−27}kg$');
+    assert.equal(equation.text.replace(/\\mathrm\{([A-Za-z]+)\}/g, '$1'), '$1.66×10^{−27}kg$');
+    assert.match(equation.text, /(?:\\mathrm\{kg\}|\\mathrm\{k\}\\mathrm\{g\})\$$/);
     assert.doesNotThrow(() => katex.renderToString(equation.text.slice(1, -1), { throwOnError: true }));
   } finally {
     await pdf.destroy();

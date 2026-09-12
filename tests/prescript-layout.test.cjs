@@ -152,11 +152,15 @@ test('provided physics I PDF: local glyph extraction recovers the six q6 left-in
     const result = extractPositionedText(content.items, viewport.transform, operators, pdfjs.OPS, id => page.commonObjs.get(id), rules);
     const question = locateQuestions([layoutPage(result.items, viewport.width, viewport.height, 1)]).find(q => q.number === 6);
     assert.ok(question);
-    assert.equal((question.text.match(/\{\}\^\{2\}_\{1\}H/g) || []).length, 4);
-    assert.match(question.text, /\{\}\^\{3\}_\{2\}He/);
-    assert.match(question.text, /\{\}\^\{3\}_\{1\}H/);
-    assert.doesNotMatch(question.text, /\n1 1 [12]/);
-    assert.match(question.text, /3\.27 MeV/);
-    assert.match(question.text, /4\.03 MeV/);
+    // Ignore only transparent letter-font wrappers for this semantic assertion;
+    // every original isotope mass/atomic number and reaction energy stays exact.
+    const semantic = question.text.replace(/\\(?:mathrm|mathit)\{([A-Za-z]+)\}/g, '$1');
+    assert.equal((semantic.match(/\{\}\^\{2\}_\{1\}H/g) || []).length, 4);
+    assert.match(semantic, /\{\}\^\{3\}_\{2\}He/);
+    assert.match(semantic, /\{\}\^\{3\}_\{1\}H/);
+    assert.doesNotMatch(semantic, /\n1 1 [12]/);
+    assert.match(semantic, /3\.27 MeV/);
+    assert.match(semantic, /4\.03 MeV/);
+    assert.match(question.text, /\{\}\^\{2\}_\{1\}\\mathrm\{H\}/);
   } finally { await pdf.destroy(); }
 });

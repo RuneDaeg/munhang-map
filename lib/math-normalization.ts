@@ -40,7 +40,7 @@ export function mathForRendering(value: string): string {
 // A formula such as CO_2 is ambiguous in isolation. Use chemistry prose as
 // evidence, and leave genetics questions and explicit author styling alone.
 function hasChemistryContext(value: string): boolean {
-  return /화학|탄산|이산화\s*탄소|산소|수소|이온|용액|분자식|반응식/.test(value)
+  return /화학|탄산|이산화\s*탄소|탄소\s*화합물|산소|수소|이온|용액|원자|분자|기체|평형|반응식|설탕|아세트산|에탄올|염화\s*나트륨|화성암|규산염|증기\s*압력/.test(value)
     && !/유전자|대립\s*유전자|염색체/.test(value);
 }
 

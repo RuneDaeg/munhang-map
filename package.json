@@ -1,6 +1,6 @@
 {
   "name": "munhang-map",
-  "version": "0.7.11",
+  "version": "0.7.14",
   "description": "모의고사 PDF 문항 분리·수식 복원·성취기준 분류 도구",
   "author": "문항맵",
   "license": "MIT",
@@ -31,7 +31,7 @@
     "test:manual": "node --test tests/manual-issues.test.cjs",
     "test:formatting": "node --test tests/text-formatting.test.cjs tests/source-text-formatting.test.cjs",
     "test:choices": "node --test tests/choice-preservation.test.cjs",
-    "test:local": "node --test tests/local-bank-http.test.cjs",
+    "test:local": "node --test tests/local-bank-http.test.cjs tests/question-bank-edit.test.cjs tests/release-check.test.cjs",
     "lint": "oxlint",
     "format": "oxfmt"
   },

@@ -10,7 +10,7 @@ export type PageText = {
   fontName?: string;
   bold?: boolean;
   underline?: boolean;
-  mathRole?: 'fractionBar' | 'radical';
+  mathRole?: 'fractionBar' | 'radical' | 'vectorArrow';
   sourceBounds?: { x: number; y: number; width: number; height: number };
 };
 export type CaptureBox = [number, number, number, number];
@@ -119,14 +119,14 @@ export function layoutPage(
   const ribbonCandidates = items.filter(
     (i) =>
       i.x > width * 0.91 &&
-      i.y < height * 0.3 &&
+      i.y > height * 0.1 && i.y < height * 0.95 &&
       i.width < i.height * 1.6 &&
       /^[가-힣ⅠⅡⅢIV]{1,3}$/.test(i.text.trim()),
   );
   const ribbons: PageText[] = [];
   for (const seed of ribbonCandidates) {
     const column = ribbonCandidates
-      .filter((i) => Math.abs(i.x - seed.x) < 3)
+      .filter((i) => Math.abs(i.x + i.width / 2 - seed.x - seed.width / 2) < 3)
       .sort((a, b) => a.y - b.y);
     if (
       column.length >= 3 &&
@@ -175,7 +175,9 @@ export function layoutPage(
     : height * 0.2;
   const headerLimit = Math.min(height * 0.23, firstQuestionY - 2);
   const headerLines = allLines.filter((line) => line.y < headerLimit);
-  const headerText = headerLines.map((line) => line.text).join('\n');
+  const headerText = [...headerLines.map((line) => line.text),
+    ...new Set(ribbons.length ? [ribbons.filter((r, i) => ribbons.indexOf(r) === i)
+      .sort((a, b) => a.y - b.y).map(r => r.text).join('')] : [])].join('\n');
   // Repeated exam mastheads are excluded, while text continuing above the next
   // question stays in the body. Tall first-page headings may use more space.
   const masthead = headerLines.filter((line) =>

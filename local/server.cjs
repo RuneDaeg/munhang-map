@@ -10,6 +10,8 @@ const providerClientPath = fs.existsSync(path.join(__dirname, 'provider-client.c
   : path.join(__dirname, '..', 'desktop', 'provider-client.cjs');
 const { PROVIDERS, keyHint, normalizeConnection, providerInfo, recognize } = require(providerClientPath);
 const { createQuestionBank } = require('./question-bank.cjs');
+const { createReleaseChecker } = require('./release-check.cjs');
+const checkRelease = createReleaseChecker();
 
 const HOST = '127.0.0.1';
 const SETTINGS_FILE = path.join(dataDirectory(), 'settings.json');
@@ -28,12 +30,22 @@ let localOrigin = '';
 const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url || '/', localOrigin || `http://${HOST}`);
-    if (url.pathname === '/api/question-bank' || url.pathname === '/api/question-bank/selection') {
+    if (url.pathname === '/api/version-check') {
+      if (request.method !== 'POST') return sendJson(response, 405, { error: '버전 확인 버튼으로 요청해 주세요.' });
+      if (!localOrigin || request.headers.host !== new URL(localOrigin).host || request.headers['sec-fetch-site'] === 'cross-site') throw new Error('문항맵 로컬 화면에서만 버전을 확인할 수 있습니다.');
+      requireLocalOrigin(request);
+      await readJsonBody(request, 100);
+      return sendJson(response, 200, await checkRelease());
+    }
+    if (['/api/question-bank', '/api/question-bank/selection', '/api/question-bank/item', '/api/question-bank/update'].includes(url.pathname)) {
       if (!localOrigin || request.headers.host !== new URL(localOrigin).host || request.headers['sec-fetch-site'] === 'cross-site') throw new Error('문항맵 로컬 화면에서만 문제함에 접근할 수 있습니다.');
       if (request.method === 'GET' && url.pathname === '/api/question-bank') return sendJson(response, 200, { items: questionBank.list(), storageLabel: '이 컴퓨터의 문항맵 데이터 폴더' });
       if (request.method === 'POST') {
         requireLocalOrigin(request);
-        const input = await readJsonBody(request, url.pathname.endsWith('/selection') ? 50000 : 85000000);
+        const limit = url.pathname.endsWith('/selection') || url.pathname.endsWith('/item') ? 50000 : url.pathname.endsWith('/update') ? 1500000 : 85000000;
+        const input = await readJsonBody(request, limit);
+        if (url.pathname.endsWith('/item')) return sendJson(response, 200, questionBank.inspect(input.id));
+        if (url.pathname.endsWith('/update')) return sendJson(response, 200, questionBank.update(input));
         return sendJson(response, 200, url.pathname.endsWith('/selection') ? { questions: questionBank.select(input.ids) } : questionBank.save(input));
       }
       return sendText(response, 405, 'Method not allowed');

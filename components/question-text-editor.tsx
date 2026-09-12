@@ -27,10 +27,11 @@ type Props = {
   value: string;
   onChange: (text: string) => void;
   onCursor: (position: number) => void;
+  disabled?: boolean;
 };
 
 const QuestionTextEditor = forwardRef<QuestionEditorHandle, Props>(
-  function QuestionTextEditor({ value, onChange, onCursor }, ref) {
+  function QuestionTextEditor({ value, onChange, onCursor, disabled = false }, ref) {
     const root = useRef<HTMLDivElement>(null);
     const last = useRef('');
     const cursor = useRef(0);
@@ -135,6 +136,7 @@ const QuestionTextEditor = forwardRef<QuestionEditorHandle, Props>(
             variant="outline"
             size="sm"
             aria-label="굵게 (Ctrl 또는 Cmd+B)"
+            disabled={disabled}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => format('bold')}
           >
@@ -145,6 +147,7 @@ const QuestionTextEditor = forwardRef<QuestionEditorHandle, Props>(
             variant="outline"
             size="sm"
             aria-label="밑줄 (Ctrl 또는 Cmd+U)"
+            disabled={disabled}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => format('underline')}
           >
@@ -160,7 +163,8 @@ const QuestionTextEditor = forwardRef<QuestionEditorHandle, Props>(
           aria-label="문항 텍스트"
           aria-multiline="true"
           tabIndex={0}
-          contentEditable
+          contentEditable={!disabled}
+          aria-disabled={disabled}
           suppressContentEditableWarning
           spellCheck={false}
           className="min-h-40 whitespace-pre-wrap break-words rounded-md border p-3 text-sm leading-6 outline-none focus-visible:ring-2 focus-visible:ring-ring"

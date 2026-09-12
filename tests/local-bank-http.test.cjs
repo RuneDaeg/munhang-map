@@ -31,6 +31,7 @@ test('local HTTP bank saves, reloads after a process restart, and rejects cross-
   const post = (origin, route, body, requestOrigin = origin) => fetch(`${origin}${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: requestOrigin }, body: JSON.stringify(body) });
   assert.deepEqual((await (await fetch(`${first.origin}/api/question-bank`)).json()).items, []);
   const input = { sourceFileName: 'fixture.pdf', sourceFingerprint: 'b'.repeat(64), questions: [{ number: 1, text: '테스트 문항', type: 'test', standardCode: '[test]', standard: '성취기준', domain: '통합과학', confidence: 80, questionCaptures: [{ page: 1, box: [0, 0, 0.5, 0.5], image: 'data:image/jpeg;base64,/9j/2Q==' }] }] };
+  input.questions.push({ ...input.questions[0], number: 2, text: '다른 문항은 보존' });
   assert.equal((await post(first.origin, '/api/question-bank', input, 'https://untrusted.example')).status, 400);
   // Fetch normalizes Host; raw HTTP is needed to test a forged Host header.
   const forgedHostStatus = await new Promise((resolve, reject) => {
@@ -39,14 +40,38 @@ test('local HTTP bank saves, reloads after a process restart, and rejects cross-
   assert.equal(forgedHostStatus, 400);
   assert.equal((await fetch(`${first.origin}/api/question-bank`, { headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 400);
   const save = await post(first.origin, '/api/question-bank', input);
-  assert.equal(save.status, 200); assert.equal((await save.json()).saved, 1);
+  assert.equal(save.status, 200); assert.equal((await save.json()).saved, 2);
+  const before = (await (await fetch(`${first.origin}/api/question-bank`)).json()).items;
+  const id = before.find(item => item.number === 1).id;
+  const entry = await (await post(first.origin, '/api/question-bank/item', { id })).json();
+  assert.equal(entry.question.text, '테스트 문항');
+  const edit = { id, revision: entry.revision, text: String.raw`수정한 $\frac{1}{2}$ 문항` };
+  assert.equal((await post(first.origin, '/api/question-bank/update', edit, 'https://untrusted.example')).status, 400);
+  const updated = await post(first.origin, '/api/question-bank/update', edit);
+  assert.equal(updated.status, 200);
+  assert.notEqual((await updated.json()).revision, entry.revision);
+  const stale = await post(first.origin, '/api/question-bank/update', { ...edit, text: '지난 초안' });
+  assert.equal(stale.status, 400); assert.match((await stale.json()).error, /다른 창|다시 불러/);
+  assert.equal((await fetch(`${first.origin}/api/question-bank/item`)).status, 405);
+  assert.equal((await fetch(`${first.origin}/api/question-bank/update`)).status, 405);
+  // Method/origin rejection must happen before any outbound GitHub request.
+  assert.equal((await fetch(`${first.origin}/api/version-check`)).status, 405);
+  assert.equal((await post(first.origin, '/api/version-check', {}, 'https://untrusted.example')).status, 400);
+  assert.equal((await fetch(`${first.origin}/api/version-check`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'cross-site' }, body: '{}' })).status, 400);
   assert.equal((await fetch(`${first.origin}/`)).status, 200);
   assert.match((await fetch(`${first.origin}/pdf.worker.min.mjs`, { method: 'HEAD' })).headers.get('content-type'), /javascript/);
   const exited = once(first.child, 'exit'); first.child.kill('SIGTERM'); await exited;
   const second = await start();
   const items = (await (await fetch(`${second.origin}/api/question-bank`)).json()).items;
-  assert.equal(items.length, 1);
-  const selected = await post(second.origin, '/api/question-bank/selection', { ids: [items[0].id] });
+  assert.equal(items.length, 2);
+  assert.equal(items.find(item => item.number === 1).text, edit.text);
+  assert.equal(items.find(item => item.number === 2).text, '다른 문항은 보존');
+  const reopened = await (await post(second.origin, '/api/question-bank/item', { id })).json();
+  assert.equal(reopened.question.text, edit.text);
+  assert.deepEqual(reopened.question.questionCaptures, input.questions[0].questionCaptures);
+  const selected = await post(second.origin, '/api/question-bank/selection', { ids: [id] });
   assert.equal(selected.status, 200);
-  assert.equal((await selected.json()).questions[0].sourceFileName, 'fixture.pdf');
+  const exported = (await selected.json()).questions[0];
+  assert.equal(exported.sourceFileName, 'fixture.pdf');
+  assert.equal(exported.text, edit.text);
 });

@@ -76,6 +76,7 @@ export function syntheticBoldAreas(
   list: Operators,
   ops: Record<string, number>,
   viewport: Matrix,
+  includePlain = false,
 ) {
   let state = {
     matrix: [...viewport],
@@ -99,6 +100,8 @@ export function syntheticBoldAreas(
     height: number;
     fontName: string;
     text: string;
+    bold?: boolean;
+    glyphs?: Array<{ text: string; x: number; right: number }>;
   }> = [];
   const move = (x: number, y: number) => {
     line = mul(line, [1, 0, 0, 1, x, y]);
@@ -150,14 +153,17 @@ export function syntheticBoldAreas(
       if (!glyphs) continue;
       let advance = 0,
         text = '';
+      const glyphAdvances: Array<{ text: string; left: number; right: number }> = [];
       for (const glyph of glyphs) {
         if (typeof glyph === 'number') advance -= (glyph * state.size) / 1000;
         else {
           text += glyph.unicode ?? '';
+          const left = advance;
           advance +=
             ((glyph.width ?? 0) * state.size) / 1000 +
             state.charSpace +
             (glyph.isSpace ? state.wordSpace : 0);
+          glyphAdvances.push({ text: glyph.unicode ?? '', left, right: advance });
         }
       }
       advance *= state.hScale;
@@ -166,10 +172,11 @@ export function syntheticBoldAreas(
         b = point(m, advance, state.rise);
       const height = Math.abs(state.size) * Math.hypot(m[2], m[3]);
       // Outline-only or invisible text is not sufficient evidence of bold emphasis.
-      if (
-        [2, 6].includes(state.mode) &&
+      const bold = [2, 6].includes(state.mode) &&
         state.lineWidth > 0 &&
-        state.lineWidth / Math.abs(state.size) <= 0.12 &&
+        state.lineWidth / Math.abs(state.size) <= 0.12;
+      if (
+        (bold || (includePlain && [0, 1, 2, 4, 5, 6].includes(state.mode))) &&
         Math.abs(a[1] - b[1]) < 0.1 &&
         height > 0
       )
@@ -180,6 +187,11 @@ export function syntheticBoldAreas(
           height,
           fontName: state.font,
           text,
+          ...(includePlain ? { bold, glyphs: glyphAdvances.map(glyph => ({
+            text: glyph.text,
+            x: point(m, glyph.left * state.hScale, state.rise)[0],
+            right: point(m, glyph.right * state.hScale, state.rise)[0],
+          })) } : {}),
         });
       tm = mul(tm, [1, 0, 0, 1, advance, 0]);
     }
@@ -227,11 +239,11 @@ export function inferPdfTextStyles<T extends Item>(
   viewport: Matrix,
   getFont: (id: string) => Font | undefined,
 ): T[] {
-  const painted = syntheticBoldAreas(list, ops, viewport);
+  const painted = syntheticBoldAreas(list, ops, viewport, true);
   const fontCache = new Map<string, boolean>();
   const underlines = openUnderlines(rules);
-  return items.map((item) => {
-    if (item.equation) return { ...item };
+  return items.flatMap((item) => {
+    if (item.equation) return [{ ...item }];
     const fontName = item.fontName ?? '';
     if (!fontCache.has(fontName)) {
       let font;
@@ -245,17 +257,50 @@ export function inferPdfTextStyles<T extends Item>(
       fontCache.get(fontName) ||
       painted.some(
         (a) =>
-          a.fontName === fontName &&
+          a.bold && a.fontName === fontName &&
           Math.abs(a.baseline - baseline) < Math.max(0.7, item.height * 0.1) &&
           item.x >= a.x - 0.8 &&
           item.x + item.width <= a.right + 1.2,
       );
     const underline = underlines.some((r) => coversUnderline(item, r));
-    return {
+    const styled = {
       ...item,
       ...(bold ? { bold: true } : {}),
       ...(underline ? { underline: true } : {}),
     };
+    if (underline || item.underline) return [styled];
+    const partial = underlines.filter(r => coversUnderline({ ...item, width: 0 }, r) &&
+      r.x2 > item.x && r.x1 < item.x + item.width);
+    if (!partial.length) return [styled];
+    // PDF text runs often contain both the underlined word and its unmarked
+    // particle/sentence. Split only with verified glyph advances from the same
+    // paint operation; do not estimate character widths or extend the underline.
+    const glyphs = painted.filter(a => a.fontName === fontName &&
+      Math.abs(a.baseline - baseline) < Math.max(.7, item.height * .1))
+      .flatMap(a => a.glyphs ?? []).filter(g =>
+        g.x >= item.x - .8 && g.x < item.x + item.width - .5)
+      .sort((a, b) => a.x - b.x).map((g, index, all) => ({ ...g,
+        // TJ kerning adjusts the next origin, so the advance before that
+        // adjustment can exceed the next glyph or the source run's edge.
+        right: Math.min(g.right, all[index + 1]?.x ?? Infinity, item.x + item.width),
+      }));
+    const exact = glyphs.map(g => g.text).join('').trim();
+    if (exact !== item.text.trim()) return [styled];
+    const pieces: Array<{ text: string; x: number; right: number; underline: boolean }> = [];
+    for (const glyph of glyphs) {
+      const marked = partial.some(r =>
+        Math.min(r.x2, glyph.right) - Math.max(r.x1, glyph.x) >= (glyph.right - glyph.x) * .8);
+      const previous = pieces.at(-1);
+      if (previous?.underline === marked) {
+        previous.text += glyph.text;
+        previous.right = glyph.right;
+      } else pieces.push({ ...glyph, underline: marked });
+    }
+    if (!pieces.some(p => p.underline) || pieces.length < 2) return [styled];
+    return pieces.filter(p => p.text.trim()).map(p => ({ ...styled,
+      text: p.text.trim(), x: p.x, width: p.right - p.x,
+      ...(p.underline ? { underline: true } : {}),
+    }));
   });
 }
 

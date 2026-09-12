@@ -8,7 +8,7 @@ const vm = require('node:vm');
 const ts = require('typescript');
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
-const { hasMissingSourcePrescripts, mathQualityIssues } = require('../lib/math-quality.ts');
+const { hasMissingSourcePrescripts, hasMisplacedSourceScripts, mathQualityIssues } = require('../lib/math-quality.ts');
 const { normalizeQuestionText, mathForRendering, splitMathText } = require('../lib/math-normalization.ts');
 const { preserveQuestionParts } = require('../lib/question-completeness.ts');
 const { enhanceQuestionsWithVision } = require('../lib/vision-recognition.ts');
@@ -20,6 +20,72 @@ const MathText = require('../components/math-text.tsx').default;
 const isotope = String.raw`{}^{2}_{1}\mathrm{H}`;
 const source = '다음은 원자핵 표기 자료이다 .\n$' + isotope + '$의 왼쪽 위 숫자와 아래 숫자를 구별할 수 있는가?';
 const image = 'data:image/jpeg;base64,/9j/2Q==';
+
+test('ordinary right subscripts cannot become invented isotope-like duplicates, and saved mistakes can be corrected', async (t) => {
+  const good = String.raw`진동수가 $f_1$, $f_2$일 때 옳은 것은?`;
+  const bad = '진동수가 ${}^{f_1}_{1}f$, ${}^{f_2}_{2}f$일 때 옳은 것은?';
+  assert.equal(hasMisplacedSourceScripts(bad, good), true);
+  assert.equal(hasMissingSourcePrescripts(good, bad), false, 'do not protect a malformed f as a nucleus');
+  assert.ok(mathQualityIssues(bad).some((item) => item.code === 'misplaced_script'));
+  assert.equal(preserveQuestionParts(bad, good, []).text, good);
+  assert.equal(preserveQuestionParts(good, bad, []).keptOriginal, false);
+  assert.equal(hasMisplacedSourceScripts('${}^{2}_{1}f$', '$f_1$'), true);
+  assert.equal(hasMisplacedSourceScripts('${}^{2}_{1}T$', '${}^{2}_{1}T$'), false, 'legitimate existing general tensor is not rejected');
+  assert.equal(hasMisplacedSourceScripts('$' + isotope + '$', '원문 원자핵 그림'), false, 'image may recover a real nucleus absent from local text');
+  const previous = global.fetch;
+  t.after(() => { global.fetch = previous; });
+  global.fetch = async () => Response.json({ questions: [{ number: 15, latexText: bad }] });
+  const rejected = await enhanceQuestionsWithVision([{ number: 15, text: good, assessmentText: good, sourcePageImage: image }]);
+  assert.equal(rejected.questions[0].text, good);
+  assert.equal(rejected.questions[0].visionEnhanced, false);
+  assert.match(rejected.warnings.join(' '), /오른쪽 첨자/);
+  global.fetch = async () => Response.json({ questions: [{ number: 15, latexText: good }] });
+  const corrected = await enhanceQuestionsWithVision([{ number: 15, text: bad, sourcePageImage: image }]);
+  assert.equal(corrected.questions[0].text, good);
+  assert.equal(corrected.questions[0].visionEnhanced, true);
+});
+
+test('element-like variable names preserve right indices, except a matching numeric nuclear pair in explicit source context', async (t) => {
+  for (const [atom, noun] of [['F', '힘'], ['p', '운동량'], ['B', '자기장'], ['H', '함수']]) {
+    const good = `${noun} $${atom}_1$의 값을 구하는 문항이다.`;
+    const moved = `${noun} $` + `{}^{2}_{1}${atom}$의 값을 구하는 문항이다.`;
+    const duplicate = `${noun} $` + `{}^{${atom}_1}_{1}${atom}$의 값을 구하는 문항이다.`;
+    assert.equal(hasMisplacedSourceScripts(moved, good), true, atom);
+    assert.equal(preserveQuestionParts(moved, good, []).keptOriginal, true, atom);
+    assert.equal(hasMisplacedSourceScripts(duplicate, good), true, atom);
+    assert.equal(hasMisplacedSourceScripts(good, duplicate), false, 'saved duplicate mistakes may be corrected');
+    assert.equal(preserveQuestionParts(good, duplicate, []).keptOriginal, false);
+  }
+  const nuclearSource = String.raw`다음 핵반응에서 $\mathrm{H}^{2}_{1}$을 확인한다.`;
+  const nuclearFixed = '다음 핵반응에서 $' + isotope + '$을 확인한다.';
+  assert.equal(hasMisplacedSourceScripts(nuclearFixed, nuclearSource), false);
+  assert.equal(preserveQuestionParts(nuclearFixed, nuclearSource, []).keptOriginal, false);
+  const electronSource = String.raw`베타 붕괴에서 $e^{0}_{−1}$을 확인한다.`;
+  const electronFixed = '베타 붕괴에서 ${}^{0}_{-1}e$을 확인한다.';
+  assert.equal(hasMisplacedSourceScripts(electronFixed, electronSource), false);
+  for (const ambiguousSource of [String.raw`$H^{2}_{1}$을 확인한다.`, String.raw`핵반응에서 $H_1$을 확인한다.`]) {
+    assert.equal(hasMisplacedSourceScripts(nuclearFixed, ambiguousSource), true, 'candidate wording cannot supply source evidence or a missing mass');
+    assert.equal(preserveQuestionParts(nuclearFixed, ambiguousSource, []).keptOriginal, true);
+  }
+  assert.equal(hasMisplacedSourceScripts('핵반응 ${}^{3}_{1}H$', nuclearSource), true, 'nuclear context never licenses changing source numbers');
+  assert.equal(hasMisplacedSourceScripts('${}^{i}_{j}T$', '${}^{i}_{j}T$'), false, 'retain a real tensor already visible in source');
+  assert.equal(hasMisplacedSourceScripts('${}^{i}_{j}T$', '이미지에 있는 텐서'), false, 'recover a tensor when no conflicting right index exists');
+  const previous = global.fetch;
+  t.after(() => { global.fetch = previous; });
+  global.fetch = async () => Response.json({ questions: [{ number: 1, latexText: '힘 ${}^{2}_{1}F$을 확인한다.' }] });
+  const original = String.raw`힘 $F_1$을 확인한다.`;
+  const guarded = await enhanceQuestionsWithVision([{ number: 1, text: original, sourcePageImage: image }]);
+  assert.equal(guarded.questions[0].text, original);
+  assert.equal(guarded.questions[0].visionEnhanced, false);
+  global.fetch = async () => Response.json({ questions: [{ number: 1, latexText: nuclearFixed }] });
+  const corrected = await enhanceQuestionsWithVision([{ number: 1, text: nuclearSource, sourcePageImage: image }]);
+  assert.equal(corrected.questions[0].text, nuclearFixed);
+  assert.equal(corrected.questions[0].visionEnhanced, true);
+  global.fetch = async () => Response.json({ questions: [{ number: 2, latexText: nuclearFixed }] });
+  const differentQuestion = await enhanceQuestionsWithVision([{ number: 1, text: original, sourcePageImage: image }]);
+  assert.equal(differentQuestion.questions[0].text, original);
+  assert.equal(differentQuestion.failures.length, 1, 'a response for another question must not be mixed into this one');
+});
 
 test('source isotope roles survive equivalent script order, font wrappers and JSON round trips', () => {
   for (const latex of [isotope, String.raw`{}_{1}^{2}H`, String.raw`{}^2_1{\mathrm{H}}`, String.raw`{}_{1}^{2}\text{H}`]) {
@@ -34,6 +100,24 @@ test('source isotope roles survive equivalent script order, font wrappers and JS
   assert.equal(JSON.parse(JSON.stringify(source)), source);
   assert.equal(mathForRendering(isotope), isotope);
   assert.deepEqual(mathQualityIssues(source), []);
+});
+
+test('structured API blocks and shared-question stems also reject invented left frequency scripts', async (t) => {
+  const original = String.raw`진동수가 $f_1$, $f_2$일 때 옳은 것은?`;
+  const malformed = '진동수가 ${}^{f_1}_{1}f$, ${}^{f_2}_{2}f$일 때 옳은 것은?';
+  const previous = global.fetch;
+  t.after(() => { global.fetch = previous; });
+  global.fetch = async () => Response.json({ questions: [{ number: 15, latexText: original,
+    blocks: [{ kind: 'text', title: '', text: malformed, rows: [], header: false }] }] });
+  const blocks = await enhanceQuestionsWithVision([{ number: 15, text: original, sourcePageImage: image }]);
+  assert.equal(blocks.questions[0].text, original);
+  assert.match(blocks.warnings.join(' '), /구조가 불완전/);
+  global.fetch = async () => Response.json({ questions: [{ number: 15, latexText: original, directStem: malformed }] });
+  const shared = await enhanceQuestionsWithVision([{ number: 15, text: original, assessmentText: original,
+    sourcePageImage: image, sharedPassage: { text: '공통 소리 자료', pages: [1], range: [14, 15] } }]);
+  assert.equal(shared.questions[0].assessmentText, original);
+  assert.equal(shared.questions[0].visionEnhanced, false);
+  assert.match(shared.warnings.join(' '), /오른쪽 첨자/);
 });
 
 test('valid but degraded isotope transcriptions are caught without inferring missing values', () => {
@@ -133,6 +217,9 @@ test('all desktop providers receive an image-first prompt with a parseable escap
     };
     await recognize({ provider, model: 'mock-test', apiKey: 'synthetic-test-only', baseUrl: 'http://127.0.0.1:11434/v1' }, { image, questions: [{ number: 6, text: source }] });
     assertNuclearPrompt(prompt);
+    await recognize({ provider, model: 'mock-test', apiKey: 'synthetic-test-only', baseUrl: 'http://127.0.0.1:11434/v1' }, { image, questions: [{ number: 15, text: String.raw`진동수가 $f_1$, $f_2$인 소리` }] });
+    assert.match(prompt, /일반 변수의 오른쪽 첨자는 오른쪽에 유지/);
+    assert.doesNotMatch(prompt, /왼쪽 첨자를 보존한 올바른 JSON 예/);
   }
 });
 
@@ -148,4 +235,7 @@ test('web route uses the same isotope instruction without accessing a real key o
   const response = await context.exports.POST(new Request('http://localhost/api/recognize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image, questions: [{ number: 6, text: source }] }) }));
   assert.equal(response.status, 200);
   assertNuclearPrompt(prompt);
+  await context.exports.POST(new Request('http://localhost/api/recognize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image, questions: [{ number: 15, text: '진동수 f1, f2' }] }) }));
+  assert.match(prompt, /일반 변수의 오른쪽 첨자는 오른쪽에 유지/);
+  assert.doesNotMatch(prompt, /왼쪽 첨자를 보존한 올바른 JSON 예/);
 });

@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 
 const digest = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const validId = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+const validItemId = (value) => typeof value === 'string' && /^[a-f0-9]{64}:[a-f0-9]{64}$/.test(value);
 
 function questionSnapshot(value, fileName) {
   if (!value || !Number.isInteger(value.number) || value.number < 1 || value.number > 10000 || !Number.isFinite(value.confidence) || value.confidence < 0 || value.confidence > 100) throw new Error('문항 번호 또는 신뢰도가 올바르지 않습니다.');
@@ -56,6 +57,55 @@ function createQuestionBank(directory) {
       fs.renameSync(temporary, filename);
     } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
   }
+  function locked(sourceId, action) {
+    fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+    const lock = `${recordPath(sourceId)}.lock`;
+    let descriptor;
+    try { descriptor = fs.openSync(lock, 'wx', 0o600); }
+    catch (error) {
+      if (error.code === 'EEXIST') throw new Error(`같은 PDF의 저장 작업이 진행 중이거나 이전 저장이 중단되었습니다. 다른 창의 저장 완료 후 다시 시도해 주세요. 계속 반복되면 초안을 복사하고 문항맵 실행 창을 모두 닫은 뒤 아래 .lock 파일만 삭제해 주세요. .jsonl 문항 파일은 삭제하지 마세요.\n${lock}`);
+      throw error;
+    }
+    try { fs.writeFileSync(descriptor, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })); return action(); }
+    finally { fs.closeSync(descriptor); fs.unlinkSync(lock); }
+  }
+  function readRecord(sourceId) {
+    const content = fs.readFileSync(recordPath(sourceId), 'utf8');
+    return JSON.parse(content.slice(content.indexOf('\n') + 1));
+  }
+  function writeRecord(record) {
+    if (Buffer.byteLength(JSON.stringify(record)) > 80000000) throw new Error('한 PDF의 저장 크기는 80MB 이하로 제한됩니다.');
+    const summary = { items: record.items.map(({ id, savedAt, question }) => ({ id, sourceFileName: record.sourceFileName, savedAt, number: question.number, standardCode: question.standardCode, domain: question.domain, text: question.text.slice(0, 500), confidence: question.confidence })) };
+    atomicWrite(recordPath(record.sourceId), `${JSON.stringify(summary)}\n${JSON.stringify(record)}`);
+  }
+  function getItem(id) {
+    if (!validItemId(id)) throw new Error('문제함 ID가 올바르지 않습니다.');
+    const record = readRecord(id.split(':')[0]);
+    const item = record.items.find(value => value.id === id);
+    if (!item) throw new Error('저장된 문항이 변경되었습니다. 문제함을 새로고침해 주세요.');
+    return { record, item };
+  }
+  function inspect(id) {
+    const { item } = getItem(id);
+    return { id, revision: digest(JSON.stringify(item)), savedAt: item.savedAt, question: item.question };
+  }
+  function update(input) {
+    if (!validItemId(input?.id) || !validId(input.revision) || typeof input.text !== 'string' || !input.text.trim() || input.text.length > 200000) throw new Error('수정할 문항 ID·텍스트·저장 버전이 올바르지 않습니다.');
+    return locked(input.id.split(':')[0], () => {
+      const { record, item } = getItem(input.id);
+      if (digest(JSON.stringify(item)) !== input.revision) throw new Error('다른 창에서 이 문항을 수정했거나 같은 PDF를 다시 저장했습니다. 초안을 복사해 둔 뒤 문항을 다시 불러와 주세요. 덮어쓰지 않았습니다.');
+      const question = questionSnapshot({ ...item.question, text: input.text, textEdited: true, visionEnhanced: false }, record.sourceFileName);
+      // These conclusions describe the old text, not the teacher's new edit.
+      delete question.assessmentText;
+      delete question.mappingReason;
+      delete question.validationFlags;
+      item.question = question;
+      item.savedAt = new Date().toISOString();
+      record.savedAt = item.savedAt;
+      writeRecord(record);
+      return { id: item.id, revision: digest(JSON.stringify(item)), savedAt: item.savedAt, question };
+    });
+  }
   function list() {
     if (!fs.existsSync(root)) return [];
     // The first JSONL line is a lightweight index; do not load capture images
@@ -90,14 +140,13 @@ function createQuestionBank(directory) {
     });
     const record = { version: 1, sourceId, sourceFileName: fileName, savedAt, items };
     if (Buffer.byteLength(JSON.stringify(record)) > 80000000) throw new Error('한 PDF의 저장 크기는 80MB 이하로 제한됩니다.');
-    fs.mkdirSync(root, { recursive: true, mode: 0o700 });
-    const filename = recordPath(sourceId);
-    const updated = fs.existsSync(filename);
-    const summary = { items: items.map(({ id, question }) => ({ id, sourceFileName: fileName, savedAt, number: question.number, standardCode: question.standardCode, domain: question.domain, text: question.text.slice(0, 500), confidence: question.confidence })) };
     // Last explicit save of the same source replaces its whole snapshot; a
     // unique temp + rename prevents partial files even with multiple processes.
-    atomicWrite(filename, `${JSON.stringify(summary)}\n${JSON.stringify(record)}`);
-    return { saved: items.length, updated };
+    return locked(sourceId, () => {
+      const updated = fs.existsSync(recordPath(sourceId));
+      writeRecord(record);
+      return { saved: items.length, updated };
+    });
   }
   function select(ids) {
     if (!Array.isArray(ids) || !ids.length || ids.length > 200 || new Set(ids).size !== ids.length || !ids.every((id) => typeof id === 'string' && /^[a-f0-9]{64}:[a-f0-9]{64}$/.test(id))) throw new Error('1~200개 문항을 중복 없이 선택해 주세요.');
@@ -116,7 +165,7 @@ function createQuestionBank(directory) {
       return item.question;
     });
   }
-  return { list, save, select };
+  return { list, save, select, inspect, update };
 }
 
 module.exports = { createQuestionBank, questionSnapshot };

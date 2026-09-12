@@ -217,6 +217,14 @@ function convert(node: Node, inherited: Style): Part {
     }
     case 'mrow': attrs(node, []); return row(children(node), style);
     case 'mstyle': attrs(node, ['displaystyle', 'scriptlevel', 'mathvariant']); return row(children(node), style);
+    case 'menclose': {
+      attrs(node, ['notation']);
+      if (node.attrs.notation !== 'box') fail('지원하지 않는 수식 테두리');
+      const body = row(children(node), style);
+      // Native BOX groups an editable expression, not a picture or literal
+      // LaTeX. Reserve the border's padding in pre-layout estimates as well.
+      return part(`BOX ${group(body.script)}`, body.width + 0.6, body.above + 0.2, body.below + 0.2);
+    }
     case 'mi': case 'mo': case 'mn': case 'mtext': return atom(node, style);
     case 'mfrac': {
       attrs(node, ['linethickness']);

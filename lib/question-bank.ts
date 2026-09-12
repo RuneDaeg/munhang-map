@@ -1,8 +1,10 @@
 import type { AnalyzedQuestion } from './pdf-analysis';
 import { normalizeQuestionText } from './math-normalization';
 import { readQuestionContext } from './question-context';
+import { assertQuestionsStorable } from './question-storage-check';
 
 export type BankItem = { id: string; sourceFileName: string; savedAt: string; number: number; standardCode: string; domain: string; text: string; confidence: number };
+export type BankEntry = { id: string; revision: string; savedAt?: string; question: AnalyzedQuestion };
 
 async function bankRequest<T>(path = '', body?: unknown): Promise<T> {
   const response = await fetch(`/api/question-bank${path}`, body === undefined ? undefined : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -20,6 +22,7 @@ export async function listBankItems(): Promise<BankItem[]> {
 
 export async function saveToQuestionBank(sourceFileName: string, questions: AnalyzedQuestion[], sourcePages: string[]): Promise<{ saved: number; updated: boolean }> {
   if (!sourcePages.length || !questions.length) throw new Error('PDF 분석을 완료한 후 저장해 주세요.');
+  assertQuestionsStorable(questions);
   const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sourcePages.join('')));
   const sourceFingerprint = [...new Uint8Array(bytes)].map((value) => value.toString(16).padStart(2, '0')).join('');
   // Whitelist the document content. Never send API settings or full source pages.
@@ -32,4 +35,17 @@ export async function loadBankSelection(ids: string[]): Promise<AnalyzedQuestion
   const result = await bankRequest<{ questions: AnalyzedQuestion[] }>('/selection', { ids });
   if (!Array.isArray(result.questions) || result.questions.length !== ids.length) throw new Error('선택한 문항을 불러오지 못했습니다.');
   return result.questions.map((question) => ({ ...question, text: normalizeQuestionText(question.text) }));
+}
+
+export async function loadBankItem(id: string): Promise<BankEntry> {
+  const entry = await bankRequest<BankEntry>('/item', { id });
+  if (entry.id !== id || !/^[a-f0-9]{64}$/.test(entry.revision) || typeof entry.question?.text !== 'string') throw new Error('문제함 문항을 읽지 못했습니다.');
+  return { ...entry, question: { ...entry.question, text: normalizeQuestionText(entry.question.text) } };
+}
+
+export async function updateBankItem(entry: BankEntry, text: string): Promise<BankEntry> {
+  assertQuestionsStorable([{ number: entry.question.number, text }]);
+  // Send only the changed text and optimistic revision, never caller-supplied
+  // images, classification, filenames or API settings.
+  return bankRequest<BankEntry>('/update', { id: entry.id, revision: entry.revision, text: normalizeQuestionText(text) });
 }

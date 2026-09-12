@@ -47,6 +47,7 @@ const examples = [
   String.raw`\begin{pmatrix}a&b\\c&d\end{pmatrix}`,
   String.raw`f(x)=\begin{cases}x^2&x>0\\0&x\le0\end{cases}`,
   String.raw`\begin{aligned}a&=b+c\\d&=e\end{aligned}`,
+  String.raw`{}^{35}\mathrm{Cl}_2`, String.raw`{}_{1}\mathrm{H}`, 'x+', '+',
 ];
 
 test('generated structures follow the native OMML child ordering', () => {
@@ -71,7 +72,7 @@ test('generated structures follow the native OMML child ordering', () => {
       if (node.name === 'm:r') assertOrder(node, ['m:rPr', 'w:rPr', 'm:t']);
       if (node.name === 'm:rPr') {
         const names = node.children.map((child) => child.name);
-        assert.ok(JSON.stringify(names) === '["m:nor"]' || JSON.stringify(names) === '["m:scr","m:sty"]');
+        assert.ok(['["m:nor"]', '["m:scr","m:sty"]', '["m:lit","m:sty"]'].includes(JSON.stringify(names)));
       }
       if (node.name === 'm:m') {
         assert.equal(node.children[0].name, 'm:mPr');
@@ -238,7 +239,7 @@ test('XML-sensitive text is escaped and no network or browser globals are needed
 });
 
 test('unsupported structures and malformed LaTeX fail explicitly, without silently dropping children', () => {
-  for (const latex of [String.raw`\phantom{x}`, String.raw`\cancel{x}`, String.raw`\boxed{x}`, String.raw`\color{red}{x}`, String.raw`\href{https://example.com}{x}`, String.raw`\includegraphics{https://example.com/a.png}`, String.raw`a\\b`, String.raw`\begin{array}{c|c}a&b\end{array}`, String.raw`\unknowncommand{x}`, String.raw`\frac{1}{`, '', 'x'.repeat(20_001)]) {
+  for (const latex of [String.raw`\phantom{x}`, String.raw`\cancel{x}`, String.raw`\raisebox{1em}{x}`, String.raw`\color{red}{x}`, String.raw`\href{https://example.com}{x}`, String.raw`\includegraphics{https://example.com/a.png}`, String.raw`a\\b`, String.raw`\begin{array}{c|c}a&b\end{array}`, String.raw`\unknowncommand{x}`, String.raw`\frac{1}{`, '', 'x'.repeat(20_001)]) {
     assert.throws(() => latexToOmml(latex), /Word 편집형 수식으로 변환할 수 없습니다/, latex);
   }
 });

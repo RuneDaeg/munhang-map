@@ -93,7 +93,7 @@ function checkAttributes(node: MathNode, allowed: string[]) {
   for (const attr of Object.keys(node.attrs)) if (!allowed.includes(attr)) failure(`${node.tag}/${attr}는 아직 지원하지 않습니다`);
 }
 
-function run(text: string, tag: string, style: Style): string {
+function run(text: string, tag: string, style: Style, literal = false): string {
   if (!text) return '';
   const variant = style.variant ?? (tag === 'mi' && Array.from(text).length === 1 ? 'italic' : 'normal');
   const variants: Record<string, [string, string]> = {
@@ -108,7 +108,7 @@ function run(text: string, tag: string, style: Style): string {
   // Normal text is native OMML too, and preserves upright chemical/function
   // letters in readers that ignore m:sty. It replaces, not accompanies, scr/sty.
   const normal = tag === 'mtext' || (tag === 'mi' && script === 'roman' && ['p', 'b'].includes(mathStyle));
-  const mathPr = normal ? '<m:nor/>' : `<m:scr m:val="${script}"/><m:sty m:val="${mathStyle}"/>`;
+  const mathPr = normal ? '<m:nor/>' : literal ? `<m:lit/><m:sty m:val="${mathStyle}"/>` : `<m:scr m:val="${script}"/><m:sty m:val="${mathStyle}"/>`;
   const wordPr = `<w:rFonts w:ascii="Cambria Math" w:hAnsi="Cambria Math"/>${style.bold || mathStyle.startsWith('b') ? '<w:b/>' : ''}${normal ? `<w:i w:val="${mathStyle.includes('i') ? 1 : 0}"/>` : ''}`;
   return `<m:r><m:rPr>${mathPr}</m:rPr><w:rPr>${wordPr}</w:rPr><m:t xml:space="preserve">${xml(text)}</m:t></m:r>`;
 }
@@ -210,8 +210,21 @@ function row(children: MathNode[], style: Style): string {
       const args = nodes(node);
       const sub = node.tag === 'msup' ? '' : convert(args[1], style);
       const sup = node.tag === 'msub' ? '' : convert(args[node.tag === 'msup' ? 1 : 2], style);
-      parts.push(`<m:sPre><m:sub>${sub}</m:sub><m:sup>${sup}</m:sup><m:e>${convert(children[++index], style)}</m:e></m:sPre>`);
-    } else parts.push(convert(node, style));
+      // An absent pre-script is intentional, not an editable placeholder.
+      // LibreOffice imports an empty OMML argument as <?>; an explicit space
+      // math run preserves a genuinely blank slot without inventing a number.
+      // Both sub and sup remain present in the required CT_SPre child order.
+      const blank = run(' ', 'mtext', style);
+      parts.push(`<m:sPre><m:sub>${sub || blank}</m:sub><m:sup>${sup || blank}</m:sup><m:e>${convert(children[++index], style)}</m:e></m:sPre>`);
+    } else {
+      // PDF prose/inline boxes can split a reaction after a binary operator.
+      // It is still printed, but must not ask a native reader to build a missing
+      // operand. m:lit is the standard literal-operator property; only a terminal
+      // operator gets it, leaving the spacing/meaning of complete x+y intact.
+      const terminalOperator = node.tag === 'mo' && /^[+−\-=<>≤≥≠≈×÷±∓→←↔⇌⇒⇔]$/u.test(content(node))
+        && children.slice(index + 1).every((next) => next.tag === 'mspace' || (next.tag === 'mtext' && !content(next).trim()));
+      parts.push(convert(node, style, terminalOperator));
+    }
   }
   return parts.join('');
 }
@@ -238,7 +251,7 @@ function matrix(node: MathNode, style: Style): string {
   return `<m:m><m:mPr><m:baseJc m:val="center"/><m:mcs>${columnPr}</m:mcs></m:mPr>${body}</m:m>`;
 }
 
-function convert(node: MathNode, inherited: Style): string {
+function convert(node: MathNode, inherited: Style, literal = false): string {
   const style = { ...inherited, variant: node.attrs.mathvariant ?? inherited.variant };
   switch (node.tag) {
     case 'math':
@@ -248,7 +261,7 @@ function convert(node: MathNode, inherited: Style): string {
       checkAttributes(node, []);
       const children = nodes(node).filter((child) => child.tag !== 'annotation');
       if (children.length !== 1) failure('예상하지 못한 MathML semantics');
-      return convert(children[0], style);
+      return row(children, style);
     }
     case 'mrow':
       checkAttributes(node, []);
@@ -258,11 +271,18 @@ function convert(node: MathNode, inherited: Style): string {
       // the explicit scripts; unsupported color/phantom layouts must not vanish.
       checkAttributes(node, ['displaystyle', 'scriptlevel', 'mathvariant']);
       return row(nodes(node), style);
+    case 'menclose':
+      checkAttributes(node, ['notation']);
+      if (node.attrs.notation !== 'box') failure('지원하지 않는 수식 테두리');
+      // ECMA-376 borderBox defaults to four visible edges when borderBoxPr is
+      // omitted. Keep the contents as native math, including circled text labels.
+      // https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.math.borderbox
+      return `<m:borderBox><m:e>${row(nodes(node), style)}</m:e></m:borderBox>`;
     case 'mi': case 'mn': case 'mo': case 'mtext':
       checkAttributes(node, ['mathvariant', 'fence', 'stretchy', 'symmetric', 'minsize', 'maxsize', 'lspace', 'rspace', 'separator', 'largeop', 'movablelimits']);
       if (nodesSafe(node).length) return row(nodes(node), style);
       if (naryInfo(node)) return nary(node, '', style);
-      return run(content(node), node.tag, style);
+      return run(content(node), node.tag, style, literal);
     case 'mfrac': {
       checkAttributes(node, ['linethickness']);
       const [numerator, denominator] = argumentsOf(node, 2);

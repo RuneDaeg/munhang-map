@@ -102,11 +102,19 @@ export function locateVisualChoices(
     used.add(image);
     const left = Math.max(x, marker.x - 2),
       top = Math.max(y, Math.min(marker.y, image.y) - 2);
-    const right = Math.min(x + w, image.x + image.width + 3),
-      bottom = Math.min(
+    const right = Math.min(x + w, image.x + image.width + 3);
+    let bottom = Math.min(
         y + h,
         Math.max(marker.y + marker.height, image.y + image.height) + 3,
       );
+    // Image XObjects include their white canvas, not just painted graph ink.
+    // Padding can therefore reach the next row's circled label. A nearby label
+    // in the same column is an authoritative row boundary, not image content.
+    const nextRow = markers.filter((other) => other.y > marker.y + marker.height
+      && other.x < right && other.x + other.width > left)
+      .sort((a, b) => a.y - b.y)[0];
+    if (nextRow && bottom > nextRow.y && bottom - nextRow.y <= marker.height * 0.7)
+      bottom = nextRow.y - Math.min(1, marker.height * 0.08);
     result.push({
       label: marker.text,
       box: [

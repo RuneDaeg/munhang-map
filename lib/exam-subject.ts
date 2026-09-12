@@ -3,6 +3,29 @@ import type { StandardRecord } from './pdf-analysis';
 export type ExamSubject = { label: string; headerText: string; subjectKeys: string[]; page: number };
 const compact = (text: string) => text.normalize('NFKC').replace(/\s|[·ㆍ]/g, '').toLowerCase();
 
+// Preserve boundaries between separate heading words. Compacting the complete
+// heading made "영역 화학 I" look like "영역화학I", so the short-course guard
+// rejected 화학 as though it were part of another Korean word. Still accept
+// individually positioned title glyphs ("화 학") without accepting 국어 inside
+// 중국어 or 과학 inside 과학탐구.
+function hasSubjectTitle(headerText: string, title: string) {
+  const source = headerText.normalize('NFKC').toLowerCase();
+  const token = compact(title);
+  const pattern = Array.from(token)
+    .map((char) => char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('[\\s·ㆍ]*');
+  for (const match of source.matchAll(new RegExp(pattern, 'gu'))) {
+    const before = source[match.index - 1] ?? '';
+    const after = source.slice(match.index + match[0].length);
+    if (token.length <= 2 && (
+      /[가-힣]/u.test(before) ||
+      /^[가-힣]/u.test(after) && !/^영[\s·ㆍ]*역/u.test(after)
+    )) continue;
+    return true;
+  }
+  return false;
+}
+
 // Old exam titles narrow the 2022 catalogue to related courses, not equivalent
 // standards. The question text still ranks candidates within those courses.
 const families: Record<string, string[]> = {
@@ -25,11 +48,7 @@ export function detectExamSubject(headerText: string, catalog: StandardRecord[],
   const subjects = [...new Set(catalog.map((item) => item.subject))];
   const titles = [...new Set([...subjects, ...Object.keys(families)])].sort((a, b) => compact(b).length - compact(a).length);
   for (const title of titles) {
-    const token = compact(title);
-    const index = header.indexOf(token);
-    if (index < 0) continue;
-    // Do not identify 과학 inside 과학탐구, or 국어 inside 중국어.
-    if (token.length <= 2 && (/[가-힣]/.test(header[index - 1] ?? '') || /[가-힣]/.test(header[index + token.length] ?? '') && !header.slice(index + token.length).startsWith('영역'))) continue;
+    if (!hasSubjectTitle(headerText, title)) continue;
     const names = families[title] ?? [title];
     const previousSchools = previous?.label === title ? new Set(previous.subjectKeys.map((key) => key.split('|')[0])) : undefined;
     const matched = catalog.filter((item) => names.includes(item.subject) && (school ? item.school === school : !previousSchools || previousSchools.has(item.school)));

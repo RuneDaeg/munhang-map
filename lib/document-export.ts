@@ -69,7 +69,28 @@ function captureFileStem(name: string) {
   return Array.from(basename.replace(/\.pdf$/i, '').normalize('NFC').replace(/[\\/:*?"<>|\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, '_')).slice(0, 50).join('').replace(/^[. ]+|[. ]+$/g, '') || '시험지';
 }
 
-export async function createCaptureArchive(title: string, questions: AnalyzedQuestion[], onProgress?: (completed: number, total: number) => void) {
+export type CaptureArchiveOptions = { groupByStandard?: boolean };
+
+function captureGroupFolder(code: string, domain: string, index: number) {
+  // The numeric prefix also prevents Windows reserved names and collisions after
+  // truncation. Unlike source names, the entire code/domain is a single label.
+  const label = `${code}_${domain}`.normalize('NFC').replace(/[\\/:*?"<>|\p{Cc}\p{Cf}\u2028\u2029]/gu, '_');
+  const shortLabel = Array.from(label).slice(0, 50).join('').replace(/^[. ]+|[. ]+$/g, '') || '미분류';
+  return `${String(index + 1).padStart(3, '0')}_${shortLabel}`;
+}
+
+function captureCsvRow(values: string[]) {
+  const cells = values.map((value) => {
+    // Quoting alone does not stop spreadsheet formula evaluation. Protect even
+    // when an imported value has whitespace/invisible characters before it.
+    // oxlint-disable-next-line no-control-regex -- Detect invisible spreadsheet formula prefixes without changing the displayed metadata.
+    const needsTextPrefix = /^[\s\p{Cc}\p{Cf}]*[=+@\-\t\r]/u.test(value);
+    return `"${(needsTextPrefix ? `'${value}` : value).replace(/"/g, '""')}"`;
+  });
+  return encoder.encode(cells.join(',') + '\r\n');
+}
+
+export async function createCaptureArchive(title: string, questions: AnalyzedQuestion[], onProgress?: (completed: number, total: number) => void, options: CaptureArchiveOptions = {}) {
   if (!questions.length) throw new Error('내보낼 문항을 선택해 주세요.');
   const { imageCount, missing, missingLabels } = captureExportSummary(questions, title);
   if (missing.length) {
@@ -77,11 +98,24 @@ export async function createCaptureArchive(title: string, questions: AnalyzedQue
   }
   if (imageCount > 1000) throw new Error('한 번에 캡처 1,000장까지 내보낼 수 있습니다. 문항을 나누어 선택해 주세요.');
   const entries: ZipEntry[] = [];
-  let totalBytes = 0;
+  const groupsByQuestion = new Map<AnalyzedQuestion, { code: string; domain: string; folder: string }>();
+  const csvParts: Uint8Array[] = [];
+  if (options.groupByStandard) {
+    for (const [index, group] of groupQuestionsByStandard(questions).entries()) {
+      const folder = captureGroupFolder(group.code, group.domain, index);
+      for (const question of group.questions) groupsByQuestion.set(question, { code: group.code, domain: group.domain, folder });
+    }
+    csvParts.push(encoder.encode('\uFEFF'), captureCsvRow(['이미지 파일', '성취기준 코드', '성취기준 내용', '교과', '원본 PDF', '원본 문항 번호', '캡처 순번', '원본 쪽']));
+  }
+  let csvBytes = csvParts.reduce((size, part) => size + part.length, 0);
+  let totalBytes = csvBytes;
+  const oversized = () => new Error(options.groupByStandard ? '캡처 이미지와 매핑 목록이 150MB를 넘습니다. 문항을 나누어 내보내 주세요.' : '캡처 이미지가 150MB를 넘습니다. 문항을 나누어 내보내 주세요.');
   onProgress?.(0, imageCount);
   for (const [index, question] of questions.entries()) {
     if (!Number.isSafeInteger(question.number) || question.number < 1) throw new Error('문항 번호를 확인해 주세요.');
-    const prefix = `${String(index + 1).padStart(3, '0')}_${captureFileStem(question.sourceFileName || title)}_${String(question.number).padStart(3, '0')}번`;
+    const sourceStem = captureFileStem(question.sourceFileName || title);
+    const safeStem = options.groupByStandard ? sourceStem.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, '_') : sourceStem;
+    const prefix = `${String(index + 1).padStart(3, '0')}_${safeStem}_${String(question.number).padStart(3, '0')}번`;
     for (const [part, capture] of question.questionCaptures!.entries()) {
       const invalid = () => new Error(`선택 ${index + 1} · ${captureFileStem(question.sourceFileName || title)} ${question.number}번의 ${part + 1}번째 캡처를 읽을 수 없습니다. 원본 PDF·검토 파일에서 캡처 범위를 다시 확인해 주세요.`);
       if (!Number.isSafeInteger(capture.page) || capture.page < 1 || typeof capture.image !== 'string') throw invalid();
@@ -89,9 +123,14 @@ export async function createCaptureArchive(title: string, questions: AnalyzedQue
       // deduplicate shared passages, or re-encode images in this image-only path.
       const header = /^data:image\/(jpeg|png);base64,/.exec(capture.image);
       if (!header) throw invalid();
+      const group = groupsByQuestion.get(question);
+      const name = `${group ? group.folder + '/' : ''}${prefix}_${String(part + 1).padStart(2, '0')}_${capture.page}쪽.${header[1] === 'jpeg' ? 'jpg' : 'png'}`;
+      // Only allowlisted mapping metadata, never question text, candidate codes,
+      // image data, API settings or the source PDF's parent directory.
+      const csvPart = group ? captureCsvRow([name, group.code, question.standard, question.domain.trim() || group.domain, (question.sourceFileName || title).split(/[\\/]/).pop() || '시험지', String(question.number), String(part + 1), String(capture.page)]) : undefined;
       const encoded = capture.image.slice(header[0].length);
       const expectedBytes = encoded.length / 4 * 3 - (encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0);
-      if (totalBytes + expectedBytes > 150_000_000) throw new Error('캡처 이미지가 150MB를 넘습니다. 문항을 나누어 내보내 주세요.');
+      if (totalBytes + expectedBytes + (csvPart?.length ?? 0) > 150_000_000) throw oversized();
       if (!encoded.length || encoded.length % 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw invalid();
       let data: Uint8Array;
       try { data = dataUrlBytes(capture.image); } catch { throw invalid(); }
@@ -102,17 +141,24 @@ export async function createCaptureArchive(title: string, questions: AnalyzedQue
           && [0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130].every((byte, position) => data[data.length - 12 + position] === byte)
           && new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(16) > 0 && new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(20) > 0;
       if (!valid) throw invalid();
-      totalBytes += data.length;
-      entries.push({ name: `${prefix}_${String(part + 1).padStart(2, '0')}_${capture.page}쪽.${header[1] === 'jpeg' ? 'jpg' : 'png'}`, data });
+      totalBytes += data.length + (csvPart?.length ?? 0);
+      if (csvPart) { csvParts.push(csvPart); csvBytes += csvPart.length; }
+      entries.push({ name, data });
       onProgress?.(entries.length, imageCount);
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
   }
+  if (options.groupByStandard) {
+    const csvData = new Uint8Array(csvBytes);
+    let offset = 0;
+    for (const part of csvParts) { csvData.set(part, offset); offset += part.length; }
+    entries.push({ name: '문항목록.csv', data: csvData });
+  }
   return zip(entries);
 }
 
-export async function downloadCaptureArchive(title: string, questions: AnalyzedQuestion[], onProgress?: (completed: number, total: number) => void) {
-  saveBlob(await createCaptureArchive(title, questions, onProgress), `${captureFileStem(title)}_문항캡처.zip`, 'application/zip');
+export async function downloadCaptureArchive(title: string, questions: AnalyzedQuestion[], onProgress?: (completed: number, total: number) => void, options: CaptureArchiveOptions = {}) {
+  saveBlob(await createCaptureArchive(title, questions, onProgress, options), `${captureFileStem(title)}_${options.groupByStandard ? '성취기준별_' : ''}문항캡처.zip`, 'application/zip');
 }
 
 export function downloadDocx(title: string, questions: AnalyzedQuestion[]) {

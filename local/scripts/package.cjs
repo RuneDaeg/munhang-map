@@ -13,6 +13,7 @@ fs.cpSync(path.join(projectRoot, 'desktop', 'renderer-dist'), path.join(output, 
 for (const [source, target] of [
   ['local/server.cjs', 'server.cjs'],
   ['local/question-bank.cjs', 'question-bank.cjs'],
+  ['local/release-check.cjs', 'release-check.cjs'],
   ['local/settings.html', 'settings.html'],
   ['local/문항맵.command', '문항맵.command'],
   ['local/문항맵.bat', '문항맵.bat'],

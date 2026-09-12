@@ -1,5 +1,5 @@
 import { normalizeQuestionText, splitMathText } from './math-normalization';
-import { hasMissingSourcePrescripts } from './math-quality';
+import { hasMissingSourcePrescripts, hasMisplacedSourceScripts } from './math-quality';
 import { questionPlainText } from './question-content';
 
 const LABELS = ['①', '②', '③', '④', '⑤'];
@@ -133,6 +133,7 @@ export function preserveQuestionParts(candidate: string, original: string, choic
   let text = normalizeQuestionText(candidate);
   const source = normalizeQuestionText(original);
   const warnings: string[] = [];
+  if (hasMisplacedSourceScripts(text, source)) return { text: source, warning: '일반 변수의 오른쪽 첨자가 왼쪽으로 이동하거나 중복되어 기존 문항을 보존했습니다. 원문 이미지와 비교해 주세요.', keptOriginal: true };
   if (hasMissingSourcePrescripts(text, source)) return { text: source, warning: '원문 원자핵의 왼쪽 위·아래 첨자(질량수·양성자 수)가 누락되거나 바뀌어 기존 문항을 보존했습니다. 원문 이미지와 비교해 주세요.', keptOriginal: true };
   const fromSource = sourceChoices(source);
   const fromApi = apiChoices(choicesValue);

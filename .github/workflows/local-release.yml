@@ -54,6 +54,7 @@ jobs:
               '문항맵-로컬/문항맵.bat',
               '문항맵-로컬/server.cjs',
               '문항맵-로컬/question-bank.cjs',
+              '문항맵-로컬/release-check.cjs',
               '문항맵-로컬/provider-client.cjs',
               '문항맵-로컬/settings.html',
               '문항맵-로컬/renderer/index.html',

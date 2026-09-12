@@ -93,8 +93,11 @@ test('provided PDF retains neutralization rows and source characters on direct e
     assert.deepEqual(table.rows[0],['혼합 용액','Ⅰ','Ⅱ','Ⅲ','Ⅳ']);
     assert.deepEqual(table.rows[1].slice(1),['30','30','30','30']);
     assert.deepEqual(table.rows[2].slice(1),['10','20','30','40']);
-    assert.match(table.rows[1][0],/혼합 전 수용액의 부피 \( mL \) HCl 수용액/);
-    assert.match(table.rows[2][0],/혼합 전 수용액의 부피 \( mL \) NaOH 수용액/);
+    // Verified source-font metadata now retains upright units/atoms as math.
+    // Ignore only these flat style wrappers, not scripts, digits or cell content.
+    const labelText = value => value.replace(/\\mathrm\{([A-Za-z]+)\}/g, '$1').replace(/\$/g, '');
+    assert.match(labelText(table.rows[1][0]),/혼합 전 수용액의 부피 \( mL \) HCl 수용액/);
+    assert.match(labelText(table.rows[2][0]),/혼합 전 수용액의 부피 \( mL \) NaOH 수용액/);
     assert.deepEqual(table.rows[3].slice(1),['23.4','25.5','26.9','25.9']);
     assert.deepEqual(table.rows[4].slice(1),['노란색','노란색','초록색','파란색']);
     const selected=decoded.items.filter(i=>i.x+i.width/2>=table.x&&i.x+i.width/2<=table.x+table.width&&i.y+i.height/2>=table.y&&i.y+i.height/2<=table.y+table.height);

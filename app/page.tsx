@@ -55,6 +55,7 @@ import { runExamAnalysis, type AnalysisProgress as ProgressState } from '@/lib/a
 import { AnalysisProgress } from '@/components/analysis-progress';
 import { ExportDialog } from '@/components/export-dialog';
 import { QuestionBank } from '@/components/question-bank';
+import { VersionCheck } from '@/components/version-check';
 import { saveToQuestionBank } from '@/lib/question-bank';
 import { version } from '@/package.json';
 
@@ -398,7 +399,8 @@ export default function Home() {
             </div>
           ))}
         </div>
-        <div className="flex flex-1 justify-end">
+        <div className="flex flex-1 justify-end gap-2">
+          <VersionCheck current={version} />
           <Button variant="ghost" size="icon" aria-label="도움말"><CircleHelp /></Button>
         </div>
       </header>
@@ -492,7 +494,7 @@ export default function Home() {
                     : batchMessage}</output>
                   {batchRunning && batchProgress && <Button size="sm" variant="outline" className="mt-2" disabled={batchStopping} onClick={() => { batchStopRef.current = true; setBatchStopping(true); }}>현재 문항 후 중단</Button>}
                 </div>}
-                {bankMessage && <output className="mt-2 block max-w-2xl text-sm leading-6 text-primary">{bankMessage}</output>}
+                {bankMessage && <output className="mt-2 block max-w-2xl whitespace-pre-wrap break-words text-sm leading-6 text-primary">{bankMessage}</output>}
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button variant="outline" disabled={busy} onClick={() => inputRef.current?.click()}><Upload /> PDF 바꾸기</Button>

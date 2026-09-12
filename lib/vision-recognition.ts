@@ -5,7 +5,7 @@ import { countUnresolvedGlyphs, glyphWarning } from './pdf-text';
 import { overlayQuestionBoxes, parseQuestionContent, questionPlainText, questionTextFromBlocks, restoreQuestionStructure } from './question-content';
 import { hasDuplicatedStem, includesRecognizedChoices, numberedApiChoices, preserveQuestionParts } from './question-completeness';
 import { preserveSourceStructures } from './structure-completeness';
-import { hasMissingSourcePrescripts, mathQualityIssues } from './math-quality';
+import { hasMissingSourcePrescripts, hasMisplacedSourceScripts, mathQualityIssues } from './math-quality';
 import { preserveSourceTextFormatting } from './source-text-formatting';
 
 type NormalizedBox = [number, number, number, number];
@@ -100,10 +100,10 @@ export async function enhanceQuestionsWithVision(
       let assessmentText = completion.source === 'original' ? question.assessmentText : question.sharedPassage
         ? preserveSourceTextFormatting(normalizeQuestionText([recognized.indirectStem,recognized.directStem,...numberedApiChoices(recognized.choices)].filter(s=>typeof s==='string').join('\n')), question.assessmentText ?? question.text)
         : completion.text;
-      const keptAssessment = completion.source !== 'original' && Boolean(question.assessmentText) && hasMissingSourcePrescripts(assessmentText ?? '', question.assessmentText!);
+      const keptAssessment = completion.source !== 'original' && Boolean(question.assessmentText) && (hasMissingSourcePrescripts(assessmentText ?? '', question.assessmentText!) || hasMisplacedSourceScripts(assessmentText ?? '', question.assessmentText!));
       if (keptAssessment) {
         assessmentText = question.assessmentText;
-        warnings.push(`${question.number}번 개별 발문: 원자핵의 왼쪽 위·아래 첨자가 누락되거나 바뀌어 기존 발문을 보존했습니다. 원문 이미지와 비교해 주세요.`);
+        warnings.push(`${question.number}번 개별 발문: 원자핵의 왼쪽 위·아래 첨자 또는 일반 변수의 오른쪽 첨자가 누락되거나 바뀌어 기존 발문을 보존했습니다. 원문 이미지와 비교해 주세요.`);
       }
       const assessmentIssues = mathQualityIssues(assessmentText ?? '');
       if (assessmentIssues.length) warnings.push(`${question.number}번 개별 발문: ${assessmentIssues.map(issue=>issue.message).join(' ')}`);
@@ -156,7 +156,7 @@ function completeQuestionText(original: string, recognized: VisionItem) {
   const hasStructure = (text: string) => parseQuestionContent(text).some((block) => block.kind !== 'text');
   const baseline = readableLength(full) >= readableLength(stemText) ? full : stemText;
   const structured = questionTextFromBlocks(recognized.blocks);
-  const canUseBlocks = structured !== undefined && readableLength(structured) >= readableLength(baseline) * 0.9 && coversText(structured, baseline) && !hasMissingSourcePrescripts(structured, baseline) && includesRecognizedChoices(questionPlainText(structured), recognized.choices);
+  const canUseBlocks = structured !== undefined && readableLength(structured) >= readableLength(baseline) * 0.9 && coversText(structured, baseline) && !hasMissingSourcePrescripts(structured, baseline) && !hasMisplacedSourceScripts(structured, baseline) && includesRecognizedChoices(questionPlainText(structured), recognized.choices);
   const overlay = !canUseBlocks ? overlayQuestionBoxes(baseline, structured ?? (hasStructure(full) ? full : '')) : undefined;
   let candidate = canUseBlocks ? structured : overlay ?? baseline;
   let source = canUseBlocks ? 'blocks' : overlay ? 'anchored-boxes' : 'text';

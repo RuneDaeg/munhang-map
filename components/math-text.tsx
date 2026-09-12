@@ -7,7 +7,7 @@ import { parseQuestionContent, tableColumnWeights } from '../lib/question-conten
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { textRuns } from '../lib/text-formatting';
 
-function MathParts({ text }: { text: string }) {
+function MathParts({ text, underline = false }: { text: string; underline?: boolean }) {
   const parts = splitMathText(normalizeQuestionText(text));
   return (
     <>
@@ -15,11 +15,20 @@ function MathParts({ text }: { text: string }) {
         if (!part.math) return <span key={index}>{part.text}</span>;
         const { display: displayMode } = part;
         // Exam operators place limits above/below even inside a Korean sentence.
-        const expression=mathForRendering(part.text);
+        // KaTeX has no height/depth metrics for these fallback circled labels.
+        // Reserve a letter's vertical extent for screen boxes only; the saved
+        // formula and native DOCX/HWPX remain unchanged (no phantom content).
+        const expression=mathForRendering(part.text).replace(
+          /\\boxed\s*\{\s*\\text\s*\{([㉠-㉻ⓐ-ⓩ①-⑳ㄱ-ㅎ])\}\s*\}/g,
+          '\\boxed{\\vphantom{Hg}\\text{$1}}',
+        );
         const html = katex.renderToString(expression, { displayMode, throwOnError: false, strict: false, trust: false, output: 'html' });
+        // Parent text-decoration does not cross KaTeX's inline-block boxes.
+        // Give just the expression its own bottom border (not the whole row).
+        const rendered = <span className={underline ? 'inline-block border-b border-current' : undefined} dangerouslySetInnerHTML={{ __html: html }} />;
         return displayMode
-          ? <span key={`${index}-${expression}`} className="my-2 block overflow-x-auto" dangerouslySetInnerHTML={{ __html: html }} />
-          : <span key={`${index}-${expression}`} dangerouslySetInnerHTML={{ __html: html }} />;
+          ? <span key={`${index}-${expression}`} className="my-2 block overflow-x-auto">{rendered}</span>
+          : <span key={`${index}-${expression}`}>{rendered}</span>;
       })}
     </>
   );
@@ -27,7 +36,7 @@ function MathParts({ text }: { text: string }) {
 
 function InlineMath({ text }: { text: string }) {
   return <>{textRuns(text).map((run,index)=>{
-    let content=<MathParts text={run.text}/>;
+    let content=<MathParts text={run.text} underline={run.underline}/>;
     if(run.underline) content=<u>{content}</u>;
     if(run.bold) content=<strong>{content}</strong>;
     return <span key={index}>{content}</span>;

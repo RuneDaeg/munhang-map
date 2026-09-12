@@ -16,6 +16,15 @@ test('chemistry context makes molecule letters upright without changing scripts 
   }
 });
 
+test('named compounds, geological composition and vapour-pressure materials provide chemical context', () => {
+  for (const prose of ['설탕과 아세트산의 탄소 화합물', '화성암의 함량', '두 물질의 증기 압력']) {
+    for (const formula of ['C_{12}H_{22}O_{11}', 'CH_3COOH', 'SiO_2', 'C_2H_5OH']) {
+      assert.equal(normalize(`${prose} $${formula}$`), `${prose} $\\mathrm{${formula}}$`);
+    }
+  }
+  assert.equal(normalize(String.raw`화성암 자료의 점 $C_2$와 시간 $t_1$`), String.raw`화성암 자료의 점 $C_2$와 시간 $t_1$`);
+});
+
 test('reaction operators and split reaction fragments retain their order', () => {
   const source = String.raw`화학 반응식 $CO_{2}+H_{2}O→H_{2}CO_{3}$, $H_{2}CO_{3}→$ ㉠ $+HCO^{−}_{3}$`;
   const expected = String.raw`화학 반응식 $\mathrm{CO_{2}}+\mathrm{H_{2}O}→\mathrm{H_{2}CO_{3}}$, $\mathrm{H_{2}CO_{3}}→$ ㉠ $+\mathrm{HCO^{−}_{3}}$`;
