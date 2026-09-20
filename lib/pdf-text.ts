@@ -1,7 +1,7 @@
 import type { PageText } from './pdf-layout';
 import type { Rule } from './pdf-structures';
 import { reconstructMathRuns } from './pdf-math-layout';
-import { inferPdfMathUnderlines, inferPdfTextStyles } from './pdf-source-formatting';
+import { inferPdfMathUnderlines, inferPdfTextStyles, syntheticBoldAreas } from './pdf-source-formatting';
 
 type TextItem = {
   str: string;
@@ -187,6 +187,74 @@ const verifiedOutlines: Record<string, string> = {
   '234:7880c6ed:ab830c3f': 'ρ',
   '236:127681cc:9abbef34': 'ε',
 };
+
+// The history source uses one broken ToUnicode value (U+F000) for BOTH title
+// marks. Their embedded outlines were rendered and checked independently.
+// Never add these to the per-Unicode decoder: only a uniquely matched painted
+// glyph position may choose the opening/closing mark. No font bytes are bundled.
+const verifiedTitleMarkOutlines: Record<string, string> = {
+  '78:d81808e6:bdc8e6e2': '『',
+  '76:cc3b1cb9:225530f7': '』',
+};
+
+type PositionedGlyph = {
+  text: string;
+  fontName: string;
+  x: number;
+  right: number;
+  baseline: number;
+  height: number;
+  replacement?: string;
+};
+
+/** Geometry-only matching of already verified outline evidence; not text order. */
+export function matchPositionedGlyph(
+  item: Omit<PositionedGlyph, 'replacement'>,
+  evidence: PositionedGlyph[],
+): string | undefined {
+  const samePosition = evidence.filter(glyph =>
+    glyph.text === item.text && glyph.fontName === item.fontName &&
+    [glyph.x, glyph.right, glyph.baseline, glyph.height,
+      item.x, item.right, item.baseline, item.height].every(Number.isFinite) &&
+    Math.abs(glyph.x - item.x) <= 0.05 &&
+    Math.abs(glyph.right - item.right) <= 0.05 &&
+    Math.abs(glyph.baseline - item.baseline) <= 0.05 &&
+    Math.abs(glyph.height - item.height) <= 0.05);
+  // Even identical overprinted glyphs are ambiguous; do not consume a queue or
+  // infer alternation from neighbouring titles. Unknown evidence cannot repair.
+  return samePosition.length === 1 ? samePosition[0].replacement : undefined;
+}
+
+function positionedTitleMarks(
+  operators: Operators,
+  ops: Record<string, number>,
+  viewport: number[],
+  getFont: (id: string) => Font | undefined,
+): PositionedGlyph[] {
+  const result: PositionedGlyph[] = [];
+  const fingerprints = new Map<Font, Map<number, string | undefined>>();
+  for (const area of syntheticBoldAreas(operators, ops, viewport, true)) {
+    for (const glyph of area.glyphs ?? []) {
+      if (glyph.text !== '\uf000') continue;
+      let replacement: string | undefined;
+      try {
+        const font = getFont(area.fontName);
+        if (font?.data && /^(?:[A-Z]{6}\+)?Haansoft Batang$/i.test(font.name ?? '') &&
+          glyph.fontChar && Array.from(glyph.fontChar).length === 1) {
+          const code = glyph.fontChar.codePointAt(0)!;
+          const cache = fingerprints.get(font) ?? new Map<number, string | undefined>();
+          if (!fingerprints.has(font)) fingerprints.set(font, cache);
+          if (!cache.has(code)) cache.set(code, glyphOutlineFingerprint(font.data, code));
+          const fingerprint = cache.get(code);
+          replacement = fingerprint ? verifiedTitleMarkOutlines[fingerprint] : undefined;
+        }
+      } catch { /* Missing/unsupported font keeps the source warning. */ }
+      result.push({ text: glyph.text, fontName: area.fontName, x: glyph.x,
+        right: glyph.right, baseline: area.baseline, height: area.height, replacement });
+    }
+  }
+  return result;
+}
 
 // Source font roles were checked as rendered glyph sheets for the eight science
 // PDFs. ASCII and private-use letters in the same EQ font are not interchangeable:
@@ -494,6 +562,10 @@ export function extractPositionedText(
   rules: Rule[] = [],
 ) {
   const { fonts: decoders, styles } = fontDecoders(operators, ops, getFont);
+  // This deliberately handles isolated source glyph items only. Mixed runs,
+  // missing coordinates or unsupported glyph layouts remain unresolved.
+  const titleMarks = items.some(candidate => (candidate as Partial<TextItem>).str?.trim() === '\uf000')
+    ? positionedTitleMarks(operators, ops, viewport, getFont) : [];
   let recoveredGlyphs = 0;
   const positioned: PositionedRun[] = [];
   for (const candidate of items) {
@@ -513,15 +585,21 @@ export function extractPositionedText(
       equation = /(?:HyhwpEQ|HancomEQN)$/i.test(sourceFontName ?? '');
     } catch { /* retain as prose */ }
     const sourceChars = Array.from(item.str.trim());
+    const [a, b, c, d, e, f] = viewport,
+      t = item.transform;
+    const height = Math.hypot(a * t[2] + c * t[3], b * t[2] + d * t[3]);
+    const baseline = b * t[4] + d * t[5] + f;
+    const x = a * t[4] + c * t[5] + e;
+    const titleMark = sourceChars.length === 1 && sourceChars[0] === '\uf000'
+      ? matchPositionedGlyph({ text: '\uf000', fontName: item.fontName, x,
+        right: x + (item.width ?? 0), baseline, height }, titleMarks) : undefined;
     const text = sourceChars
       .map((char) => {
-        const value = decoder?.get(char);
+        const value = titleMark || decoder?.get(char);
         if (value) recoveredGlyphs++;
         return value || char;
       })
       .join('');
-    const [a, b, c, d, e, f] = viewport,
-      t = item.transform;
     // A rotation is not italics. Detect only shear between the two text axes.
     const slanted = Math.abs(t[0] * t[2] + t[1] * t[3]) /
       Math.max(0.001, Math.hypot(t[0], t[1]) * Math.hypot(t[2], t[3])) > 0.12;
@@ -545,8 +623,6 @@ export function extractPositionedText(
         ? `\\${chunk.role === 'italic' ? 'mathit' : 'mathrm'}{${escape(chunk.text)}}`
         : escape(chunk.text)).join('');
     }
-    const height = Math.hypot(a * t[2] + c * t[3], b * t[2] + d * t[3]);
-    const baseline = b * t[4] + d * t[5] + f;
     positioned.push({
       text,
       mathRole:
@@ -562,7 +638,7 @@ export function extractPositionedText(
       ...(sourceMathLatex ? { sourceMathLatex } : {}),
       equation: equation && Boolean(decoder),
       baseline,
-      x: a * t[4] + c * t[5] + e,
+      x,
       y: baseline - height,
       height,
       width: item.width ?? 0,

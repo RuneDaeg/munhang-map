@@ -2,6 +2,7 @@ import type { CaptureBox, PageText } from './pdf-layout';
 import { questionTextFromBlocks } from './question-content';
 import { detectChoicePanels, detectDialogue } from './pdf-reading-order';
 import { styledItemText, detectRangeBrackets } from './pdf-source-formatting';
+import { detectPdfTimelines } from './pdf-timeline';
 
 export type Rule = { x1: number; y1: number; x2: number; y2: number };
 type Matrix = number[];
@@ -491,9 +492,11 @@ export function detectPdfStructures(
         (text.match(/[A-Za-z]{2,}/g)?.length ?? 0) >= 7;
       const compactPhrase = /[가-힣]{2}/.test(text) && content.length > 0 &&
         area.height <= Math.max(...content.map(i=>i.height)) * 2.4;
-      const symbolText = content.length === 1 ? content[0].text.trim() : '';
+      const parenthesizedLabel = /^\([가-힣A-Z]\)$/.test(content.map(i=>i.text).join('').replace(/\s/g,'')) &&
+        rowsOf(content).length === 1 && content.length <= 3;
+      const symbolText = parenthesizedLabel ? content.map(i=>i.text).join('').replace(/\s/g,'') : content.length === 1 ? content[0].text.trim() : '';
       const symbolMath = symbolText.match(/^\$((?:\\(?:mathrm|mathit)\{[A-Za-z]\})|[A-Za-z])\$$/);
-      const symbol = content.length === 1 && (/^[A-Za-z㉠-㉻ⓐ-ⓩ]$/.test(symbolText) || symbolMath)
+      const symbol = (content.length === 1 && (/^[A-Za-z㉠-㉻ⓐ-ⓩ]$/.test(symbolText) || symbolMath)) || parenthesizedLabel
         ? content[0] : undefined;
       const boxedSymbol = symbol && area.width < symbol.height * 28 && area.height < symbol.height * 1.6 &&
         items.some(i => !inside(i, area) && (i.text.length > 1 || /^[◦•∙]$/.test(i.text)) &&
@@ -674,7 +677,8 @@ export function structureQuestionRegion(
     height: box[3] * height,
   };
   const selected = items.filter((i) => inside(i, area));
-  const structures = detectPdfStructures(selected, rules, imageAreas).filter(
+  const detected = detectPdfStructures(selected, rules, imageAreas);
+  const structures = detected.filter(
     (s) =>
       s.x >= area.x - 2 &&
       s.x + s.width <= area.x + area.width + 2 &&
@@ -683,6 +687,10 @@ export function structureQuestionRegion(
   );
   const choice = detectChoiceTable(selected) ?? detectChoicePanels(selected);
   for(const s of imageStructures) {
+    // A light interior in a long prose cell is not a second material box.
+    // Existing vector/table ownership has priority over the raster fallback.
+    if(s.kind==='box' && s.sourceItems?.length && structures.some(v=>
+      v.kind==='table' && s.sourceItems!.every(i=>inside(i,v)))) continue;
     if(s.x>=area.x-2 && s.y>=area.y-2 && s.x+s.width<=area.x+area.width+2 && s.y+s.height<=area.y+area.height+2
       && !structures.some(v=>Math.abs(v.x-s.x)<3 && Math.abs(v.y-s.y)<3 && Math.abs(v.width-s.width)<6 && Math.abs(v.height-s.height)<6)) structures.push(s);
   }
@@ -690,6 +698,7 @@ export function structureQuestionRegion(
     structures.push(choice);
   structures.push(...detectDialogue(selected));
   structures.push(...detectRangeBrackets(selected,rules));
+  structures.push(...detectPdfTimelines(selected,rules));
   // If a structure cannot be serialized, keep every source item as plain text.
   const accepted = structures.filter(
     (s) => questionTextFromBlocks([s]) !== undefined,
@@ -714,10 +723,11 @@ export function structureQuestionRegion(
     depth = 0,
   ): string {
     if (depth > 8) return textOf(content);
-    const owns = (s: PdfStructure, i: PageText) =>
-      s.sourceItems
+    const owns = (s: PdfStructure, i: PageText): boolean =>
+      (s.sourceItems
         ? s.sourceItems.includes(i)
-        : inside(i, s, s.kind === 'box' && s.title ? 7 : 0);
+        : inside(i, s, s.kind === 'box' && s.title ? 7 : 0)) ||
+      accepted.some(child=>parents.get(child)===s && owns(child,i));
     const events: Array<Area & { text: string; orderY?: number }> =
       children.map((s) => {
         const nested = accepted.filter((child) => parents.get(child) === s);
@@ -725,7 +735,7 @@ export function structureQuestionRegion(
           s.kind === 'box' && nested.length
             ? serialize(
                 content.filter(
-                  (i) => inside(i, s) && (!s.title || i.y > s.y + 4),
+                  (i) => (s.sourceItems ? owns(s,i) || nested.some(child=>owns(child,i)) : inside(i, s)) && (!s.title || i.y > s.y + 4),
                 ),
                 nested,
                 depth + 1,
@@ -733,6 +743,7 @@ export function structureQuestionRegion(
             : s.text;
         return {
           ...s,
+          orderY: s.orderY ?? (s.kind==='box' && s.sourceItems?.length ? Math.min(...s.sourceItems.map(i=>i.y)) : undefined),
           text:
             (s.inlineContent ?? questionTextFromBlocks([{ ...s, text }]) ??
             textOf(content.filter((i) => inside(i, s)))) + (s.afterText ? `\n${s.afterText}` : ''),
@@ -768,7 +779,10 @@ export function structureQuestionRegion(
         orderY: inlineRowOrder.get(row),
       })),
     );
-    events.sort((a, b) => (a.orderY ?? a.y) - (b.orderY ?? b.y) || a.x - b.x);
+    events.sort((a, b) => {
+      const dy=(a.orderY ?? a.y)-(b.orderY ?? b.y);
+      return Math.abs(dy)<.7 ? a.x-b.x : dy;
+    });
     // Captions under a side-by-side source image must not split the adjacent
     // paragraph. A label is moved only with measured image ownership and an
     // immediately continuing prose line; it is retained exactly once.
@@ -798,7 +812,9 @@ export function structureQuestionRegion(
     }
     // A left paragraph alongside a right table must finish before that table.
     // Move the table, not the text, past its adjacent paragraph lines.
-    for (const child of children) {
+    // Inserting multiple callouts after the same adjacent paragraph in forward
+    // order reverses them. Move lower callouts first, preserving source order.
+    for (const child of [...children].sort((a,b)=>b.y-a.y || b.x-a.x)) {
       const at = events.findIndex(
         (e) =>
           e.text.startsWith(':::') &&
@@ -845,5 +861,9 @@ export function structureQuestionRegion(
       accepted.filter((s) => !parents.get(s)),
     ),
     structures: accepted,
+    warnings: detected.some(s=>!structures.includes(s) &&
+      s.y>=area.y-2 && s.y+s.height<=area.y+area.height+2 &&
+      Math.min(s.x+s.width,area.x+area.width)-Math.max(s.x,area.x)>s.width*.8)
+      ? ['감지한 자료틀 일부가 문항 캡처 범위를 벗어납니다. 캡처 범위를 확인해 주세요.'] : [],
   };
 }

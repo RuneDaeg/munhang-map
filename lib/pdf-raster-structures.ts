@@ -2,6 +2,29 @@ import type { PageText } from './pdf-layout';
 import type { PdfImageArea } from './pdf-visual-choices';
 import type { PdfStructure } from './pdf-structures';
 import { styledItemText } from './pdf-source-formatting';
+import { detectMaterialFrames } from './pdf-material-frames';
+
+/** Some writers tile one illustration into touching strips. This joins only
+ * aligned, gap-free rectangles; detection still has to prove the outer frame. */
+export function joinImageTiles(images: PdfImageArea[]): PdfImageArea[] {
+  const result = images.filter(a=>a.width>0 && a.height>0).map(a=>({...a}));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i=0; i<result.length && !changed; i++) for (let j=i+1; j<result.length; j++) {
+      const a=result[i], b=result[j];
+      const vertical = Math.abs(a.x-b.x)<.5 && Math.abs(a.width-b.width)<.5 &&
+        Math.min(Math.abs(a.y+a.height-b.y),Math.abs(b.y+b.height-a.y))<.5;
+      const horizontal = Math.abs(a.y-b.y)<.5 && Math.abs(a.height-b.height)<.5 &&
+        Math.min(Math.abs(a.x+a.width-b.x),Math.abs(b.x+b.width-a.x))<.5;
+      if (!vertical && !horizontal) continue;
+      const x=Math.min(a.x,b.x), y=Math.min(a.y,b.y);
+      result[i]={id:`${a.id}+${b.id}`,x,y,width:Math.max(a.x+a.width,b.x+b.width)-x,height:Math.max(a.y+a.height,b.y+b.height)-y};
+      result.splice(j,1);changed=true;break;
+    }
+  }
+  return result;
+}
 
 const inside = (i: PageText, a: PdfImageArea) =>
   i.x + i.width / 2 > a.x &&
@@ -149,15 +172,16 @@ export async function imageTextStructures(
   images: PdfImageArea[],
   items: PageText[],
 ) {
-  const candidates = images.filter(
+  const candidates = [...images, ...joinImageTiles(images)].filter(
     (a) =>
       a.width > 30 &&
       a.height > 20 &&
       a.width < pageWidth * 0.8 &&
       a.height < pageHeight * 0.8 &&
       items.filter((i) => inside(i, a)).length >= 8,
-  );
-  if (!candidates.length) return [];
+  ).filter((area,index,all)=>!all.slice(0,index).some(prior=>
+    Math.abs(prior.x-area.x)<.1 && Math.abs(prior.y-area.y)<.1 &&
+    Math.abs(prior.width-area.width)<.1 && Math.abs(prior.height-area.height)<.1));
   const image = new Image();
   await new Promise<void>((resolve, reject) => {
     image.onload = () => resolve();
@@ -165,8 +189,23 @@ export async function imageTextStructures(
       reject(new Error('원문 이미지의 표 경계를 읽지 못했습니다.'));
     image.src = pageImage;
   });
+  const fullCanvas = document.createElement('canvas');
+  const scale = Math.min(2, 1600 / pageWidth, 2200 / pageHeight);
+  fullCanvas.width = Math.ceil(pageWidth * scale);
+  fullCanvas.height = Math.ceil(pageHeight * scale);
+  const fullContext = fullCanvas.getContext('2d');
   const result: PdfStructure[] = [];
+  if (fullContext) {
+    fullContext.drawImage(image,0,0,fullCanvas.width,fullCanvas.height);
+    result.push(...detectMaterialFrames(fullContext.getImageData(0,0,fullCanvas.width,fullCanvas.height).data,
+      fullCanvas.width,fullCanvas.height,pageWidth,pageHeight,items));
+  }
+  fullCanvas.width = fullCanvas.height = 1;
+  const confirmed: PdfImageArea[] = [];
   for (const area of candidates) {
+    // Already complete adjacent cards are not fragments of a larger table.
+    if (confirmed.some(prior=>prior.x>=area.x-.5 && prior.y>=area.y-.5 &&
+      prior.x+prior.width<=area.x+area.width+.5 && prior.y+prior.height<=area.y+area.height+.5)) continue;
     const canvas = document.createElement('canvas');
     canvas.width = Math.ceil(area.width * 2);
     canvas.height = Math.ceil(area.height * 2);
@@ -190,7 +229,16 @@ export async function imageTextStructures(
       area,
       items,
     );
-    if (structure) result.push(structure);
+    if (structure) {
+      confirmed.push(area);
+      // A straight grid has stronger cell evidence than the material fallback.
+      // Avoid duplicate boxes around exactly the same source paragraph.
+      const contents = new Set(structure.sourceItems);
+      const duplicate = result.findIndex(frame=>frame.sourceItems?.length &&
+        frame.sourceItems.length >= contents.size * .9 && frame.sourceItems.every(item=>contents.has(item)));
+      if (duplicate >= 0) result.splice(duplicate,1,structure);
+      else result.push(structure);
+    }
     canvas.width = canvas.height = 1;
   }
   return result;

@@ -56,6 +56,7 @@ import { AnalysisProgress } from '@/components/analysis-progress';
 import { ExportDialog } from '@/components/export-dialog';
 import { QuestionBank } from '@/components/question-bank';
 import { VersionCheck } from '@/components/version-check';
+import { SupportReport } from '@/components/support-report';
 import { saveToQuestionBank } from '@/lib/question-bank';
 import { version } from '@/package.json';
 
@@ -378,6 +379,10 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-background text-foreground">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b bg-muted/50 px-4 py-1.5 lg:px-7">
+        <a href="https://dorms.school" target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-primary underline underline-offset-4">AI 교사 커뮤니티 DoRms</a>
+        <SupportReport version={version} fileName={fileName} questions={checkedQuestions} sourcePages={sourcePages} busy={busy} />
+      </div>
       <header className="sticky top-0 z-30 flex h-16 items-center border-b bg-background/90 px-4 backdrop-blur-xl lg:px-7">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <button className="grid size-9 place-items-center rounded-xl bg-primary text-primary-foreground" aria-label="메뉴 열기">

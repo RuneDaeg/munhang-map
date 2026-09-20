@@ -15,6 +15,60 @@ export type PageText = {
 };
 export type CaptureBox = [number, number, number, number];
 type Line = PageText & { column: number };
+type MaterialArea = { x: number; y: number; width: number; height: number };
+type MaterialRule = { x1: number; y1: number; x2: number; y2: number };
+export type PageMaterialGeometry = {
+  rules?: readonly MaterialRule[];
+  images?: readonly MaterialArea[];
+};
+
+/** Text-free picture margins and raster borders are still part of a question. */
+function materialColumnBounds(
+  left: number, right: number, top: number, bottom: number,
+  hardLeft: number, hardRight: number, geometry?: PageMaterialGeometry,
+) {
+  const areas: MaterialArea[] = [...(geometry?.images ?? []),
+    ...(geometry?.rules ?? [])
+      // Horizontal painted edges carry the full border width. A lone vertical
+      // page separator/ribbon is not evidence for widening a question capture.
+      .filter(r => Math.abs(r.y2 - r.y1) < 0.7 && r.x2 - r.x1 > 5)
+      .map(r => ({ x: r.x1, y: r.y1, width: r.x2 - r.x1, height: 0.1 })),
+  ];
+  for (const area of areas) {
+    if (![area.x, area.y, area.width, area.height].every(Number.isFinite)
+      || area.width <= 0 || area.height < 0 || area.y < top - 0.5
+      || area.y + area.height > bottom + 0.5) continue;
+    const end = area.x + area.width;
+    // Do not let a full-page background or an adjacent-column image bridge the
+    // measured gutter. Only material already substantially in this column owns it.
+    if (area.x < hardLeft || end > hardRight
+      || Math.min(end, right) - Math.max(area.x, left) < Math.min(area.width * 0.5, (right - left) * 0.25)) continue;
+    left = Math.max(hardLeft, Math.min(left, area.x - 2));
+    right = Math.min(hardRight, Math.max(right, end + 2));
+  }
+  return { left, right };
+}
+
+/** A verified page-number enclosure starts before its numeral glyphs. */
+function footerFrameTop(footer: Line | undefined, width: number, rules: readonly MaterialRule[] = []) {
+  if (!footer) return undefined;
+  const horizontal = rules.filter(r => Math.abs(r.y2 - r.y1) < 0.7
+    && r.x2 - r.x1 < width * 0.2 && r.x2 - r.x1 > footer.width
+    && r.x1 <= footer.x && r.x2 >= footer.x + footer.width
+    && Math.abs((r.x1 + r.x2) / 2 - width / 2) < width * 0.1);
+  for (const top of horizontal.filter(r => r.y1 <= footer.y && r.y1 >= footer.y - Math.max(12, footer.height))) {
+    const base = horizontal.find(r => r.y1 > footer.y + footer.height
+      && r.y1 < footer.y + footer.height * 3
+      && Math.abs(r.x1 - top.x1) < 1 && Math.abs(r.x2 - top.x2) < 1);
+    if (!base) continue;
+    // Rounded rectangle corners may leave up to three points between the straight
+    // segments. Require both sides, not an arbitrary underline near a page number.
+    const sideAt = (x: number) => rules.some(r => Math.abs(r.x2 - r.x1) < 0.7
+      && Math.abs(r.x1 - x) <= 3 && Math.abs(r.y1 - top.y1) <= 3 && Math.abs(r.y2 - base.y1) <= 3);
+    if (sideAt(top.x1) && sideAt(top.x2)) return top.y1 - 1;
+  }
+  return undefined;
+}
 
 /** Measure a continuous text-free gutter; question numbers are not required on both sides. */
 export function measureColumnGutter(items: PageText[], width: number, height: number) {
@@ -113,6 +167,7 @@ export function layoutPage(
   width: number,
   height: number,
   page: number,
+  geometry?: PageMaterialGeometry,
 ): PageLayout {
   // Isolate a vertical subject ribbon outside the body. Do not remove arbitrary
   // one-character diagram labels inside a question or a continuation paragraph.
@@ -201,6 +256,11 @@ export function layoutPage(
   // Text-item height ends at the baseline; leave room for descenders in the
   // final choices while stopping before the centered footer glyphs.
   const bottom = footer ? Math.min(height * 0.96, footer.y - 2) : height * 0.96;
+  const footerCaptureBottom = footerFrameTop(footer, width, geometry?.rules);
+  const divider = twoColumns ? geometry?.rules?.filter(r => Math.abs(r.x2 - r.x1) < 0.7
+    && r.y2 - r.y1 > height * 0.45
+    && r.x1 > (gutter?.left ?? width * 0.46) && r.x1 < (gutter?.right ?? width * 0.54))
+    .sort((a, b) => Math.abs(a.x1 - midpoint) - Math.abs(b.x1 - midpoint))[0] : undefined;
   const divisions = twoColumns
     ? [
         [Math.max(0,Math.min(...items.filter(i=>i.x<midpoint&&i.y>top&&i.y<bottom).map(i=>i.x))-8), gutter ? gutter.left+2 : midpoint],
@@ -227,11 +287,18 @@ export function layoutPage(
     const end = notice ? Math.min(bottom, notice.y - 8) : bottom;
     content = content.filter((i) => i.y < end);
     bodyItems.push(...content);
+    // Keep text detection unchanged. Trim only the capture, and only if every
+    // final body glyph (including descenders) remains above the footer frame.
+    const captureEnd = footerCaptureBottom !== undefined
+      && content.every(i => (i.sourceBounds ?? i).y + (i.sourceBounds ?? i).height + 1 < footerCaptureBottom)
+      ? Math.min(end, footerCaptureBottom) : end;
+    const materialBounds = materialColumnBounds(left, right, top, captureEnd,
+      twoColumns && column === 1 ? Math.max(midpoint, divider?.x1 ?? midpoint) + 0.5 : 0,
+      twoColumns && column === 0 ? Math.min(midpoint, divider?.x1 ?? midpoint) - 0.5 : width, geometry);
     return {
-      left,
-      right,
+      ...materialBounds,
       top: Math.max(0, top),
-      bottom: end,
+      bottom: captureEnd,
       lines: linesFrom(content, column),
     };
   });

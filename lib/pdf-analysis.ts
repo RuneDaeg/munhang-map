@@ -103,9 +103,9 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
     const [content, pageImage, operators] = await Promise.all([page.getTextContent(), renderPageCapture(page), page.getOperatorList()]);
     const rules = pdfRules(operators, pdfjs.OPS, viewport.transform);
     const { items: positioned, mathWarnings } = extractPositionedText(content.items, viewport.transform, operators, pdfjs.OPS, (id) => page.commonObjs.get(id), rules);
-    const layout=layoutPage(positioned, viewport.width, viewport.height, pageNumber);
-    pages.push(layout);
     const images=pdfImageAreas(operators,pdfjs.OPS,viewport.transform);
+    const layout=layoutPage(positioned, viewport.width, viewport.height, pageNumber, {rules, images});
+    pages.push(layout);
     const rasterStructures=await imageTextStructures(pageImage,viewport.width,viewport.height,images,layout.bodyItems);
     geometry.push({items:layout.bodyItems,rules,images,rasterStructures,mathWarnings});
     pageImages.push(pageImage);
@@ -148,6 +148,7 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
       const source = geometry[region.page-1], page = pages[region.page-1];
       return structureQuestionRegion(source.items,source.rules,region.box,page.width,page.height,source.rasterStructures,source.images);
     });
+    warnings.push(...structuredRegions.flatMap(region=>region.warnings));
     const structuredText = normalizeQuestionText(structuredRegions.map(region=>region.text).join('\n').replace(new RegExp(`^\\s*${chunk.number}\\s*[.)]\\s*`),'') || chunk.text);
     const assessmentText = normalizeQuestionText(structuredRegions.slice(chunk.sharedRegionCount ?? 0).map(region=>region.text).join('\n')
       .replace(new RegExp(`^\\s*${chunk.number}\\s*[.)]\\s*`),''));

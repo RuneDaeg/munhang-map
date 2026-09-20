@@ -101,7 +101,7 @@ export function syntheticBoldAreas(
     fontName: string;
     text: string;
     bold?: boolean;
-    glyphs?: Array<{ text: string; x: number; right: number }>;
+    glyphs?: Array<{ text: string; fontChar?: string; x: number; right: number }>;
   }> = [];
   const move = (x: number, y: number) => {
     line = mul(line, [1, 0, 0, 1, x, y]);
@@ -147,13 +147,13 @@ export function syntheticBoldAreas(
       }
       const glyphs = args.find(Array.isArray) as
         | Array<
-            number | { unicode?: string; width?: number; isSpace?: boolean }
+            number | { unicode?: string; fontChar?: string; width?: number; isSpace?: boolean }
           >
         | undefined;
       if (!glyphs) continue;
       let advance = 0,
         text = '';
-      const glyphAdvances: Array<{ text: string; left: number; right: number }> = [];
+      const glyphAdvances: Array<{ text: string; fontChar?: string; left: number; right: number }> = [];
       for (const glyph of glyphs) {
         if (typeof glyph === 'number') advance -= (glyph * state.size) / 1000;
         else {
@@ -163,7 +163,9 @@ export function syntheticBoldAreas(
             ((glyph.width ?? 0) * state.size) / 1000 +
             state.charSpace +
             (glyph.isSpace ? state.wordSpace : 0);
-          glyphAdvances.push({ text: glyph.unicode ?? '', left, right: advance });
+          glyphAdvances.push({ text: glyph.unicode ?? '',
+            ...(typeof glyph.fontChar === 'string' ? { fontChar: glyph.fontChar } : {}),
+            left, right: advance });
         }
       }
       advance *= state.hScale;
@@ -189,6 +191,7 @@ export function syntheticBoldAreas(
           text,
           ...(includePlain ? { bold, glyphs: glyphAdvances.map(glyph => ({
             text: glyph.text,
+            ...(glyph.fontChar ? { fontChar: glyph.fontChar } : {}),
             x: point(m, glyph.left * state.hScale, state.rise)[0],
             right: point(m, glyph.right * state.hScale, state.rise)[0],
           })) } : {}),
