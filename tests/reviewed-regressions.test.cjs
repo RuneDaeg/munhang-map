@@ -79,7 +79,7 @@ test('a manually split child keeps its own stem anchor despite shared context', 
   assert.equal(ownAssessmentText(question),'발표자의 말하기 방식으로 적절한 것은?');
   assert.equal(mapAssessment(question,catalog).area,'speech');
   const source=fs.readFileSync(path.join(__dirname,'../app/page.tsx'),'utf8');
-  assert.ok(source.includes('if (!marker) secondText = `${secondNumber}. ${secondText}`'));
+  assert.ok(source.includes('if (!marker) secondText = `${secondSourceNumber}. ${secondText}`'));
 });
 
 test('changing subject clears the previous assessment explanation and stale flags', () => {

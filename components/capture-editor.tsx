@@ -9,6 +9,7 @@ import { cropPage, type QuestionCapture } from '@/lib/question-capture';
 import { dragCaptureBox, setCaptureEdge, validCaptureBox, type DragMode, type Point } from '@/lib/capture-editor';
 import type { CaptureBox } from '@/lib/pdf-layout';
 import type { AnalyzedQuestion } from '@/lib/pdf-analysis';
+import { questionLabel } from '@/lib/question-context';
 
 type Region = { page: number; box: CaptureBox };
 
@@ -63,7 +64,7 @@ export function CaptureEditor({ question, sourcePages, onClose, onSave }: {
   }
   return <Dialog open onOpenChange={(open) => { if (!open && !saving) onClose(); }}>
     <DialogContent className="flex h-[92vh] max-w-[calc(100%-1rem)] flex-col gap-3 sm:max-w-5xl">
-      <DialogTitle>{question.number}번 문항 캡처 범위 수정</DialogTitle>
+      <DialogTitle>{questionLabel(question)} 문항 캡처 범위 수정</DialogTitle>
       <DialogDescription>상자를 끌어 이동하고 모서리를 조절하세요. 상자 밖에서 드래그하면 새 범위를 그립니다. 위 발문부터 그림·자료와 마지막 선택지까지 포함해 주세요.</DialogDescription>
       <div className="grid min-h-0 flex-1 gap-4 overflow-auto md:grid-cols-[minmax(0,1fr)_240px]">
         <div className="min-w-0 overflow-auto rounded-xl border bg-slate-100 p-2">

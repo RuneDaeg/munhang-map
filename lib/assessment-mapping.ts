@@ -11,6 +11,7 @@ export type CatalogRecord = {
 };
 export type MappingQuestion = {
   number: number;
+  sourceQuestionNumber?: number;
   text: string;
   assessmentText?: string;
   selectedSubjectKey?: string;
@@ -107,7 +108,7 @@ export function ownAssessmentText(question: MappingQuestion): string {
   if (!question.textEdited && question.assessmentText !== undefined)
     return question.assessmentText.trim();
   const plain = question.text.replace(/<\/?[bu]>/g, '');
-  const re = new RegExp(`(?:^|\\n)\\s*${question.number}\\s*[.)]\\s*`, 'g');
+  const re = new RegExp(`(?:^|\\n)\\s*${question.sourceQuestionNumber ?? question.number}\\s*[.)]\\s*`, 'g');
   const matches = [...plain.matchAll(re)];
   if (matches.length === 1)
     return plain.slice(matches[0].index! + matches[0][0].length).trim();

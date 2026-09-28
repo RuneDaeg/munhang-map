@@ -250,33 +250,41 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
       baseOf(r) - baseOf(line) >= -h * 1.6 && baseOf(r) - baseOf(line) <= -h * 0.55);
     if (!letters.length || numerator) continue;
     letters.sort((a,b) => a.x-b.x);
+    const italicSingle = letters.length === 1 && /^[A-Z]$/.test(letters[0].text) &&
+      /^\\mathit\{[A-Z]\}$/.test(letters[0].sourceMathLatex ?? '');
+    // Slanted statistical variables can have a short advance but a wider
+    // painted accent. Allow that verified italic overhang, not arbitrary bars.
     if (letters.some((r,i) => i && r.x-right(letters[i-1]) > h * 0.2) ||
-      Math.abs(letters[0].x-line.x) > h * 0.12 || Math.abs(right(letters[letters.length-1])-right(line)) > h * 0.15) continue;
+      Math.abs(letters[0].x-line.x) > h * 0.12 || Math.abs(right(letters[letters.length-1])-right(line)) > h * (italicSingle ? 0.42 : 0.15)) continue;
     const latex = `\\overline{${words(letters)}}`;
     fold(line, letters, latex, Math.max(...letters.map(baseOf)), h);
     events.push({kind:'overline',sourceIds:line.sourceIds,latex});
   }
 
   // These annotations are centered on operators, not right-hand scripts.
-  for (const op of active().filter((r) => r.equation && /^(?:lim|Σ|∑)$/.test(r.text))) {
-    const isLimit = op.text === 'lim', h = op.height;
+  for (const op of active().filter((r) => r.equation && /^(?:lim|Σ|∑|∫)$/.test(r.text))) {
+    const isLimit = op.text === 'lim', isIntegral = op.text === '∫', h = op.height;
     const nearby = active().filter((r) => r.id !== op.id && r.equation &&
       !bar(r) && !radical(r) && r.height >= h * 0.25 && r.height <= h * (isLimit ? 0.75 : 0.55) &&
       r.x >= op.x - h * 0.55 && right(r) <= right(op) + h * 0.55 && !across(op,r));
     const row = (above: boolean) => {
       const list = nearby.filter((r) => {
         const delta = baseOf(r)-baseOf(op);
-        return above ? delta < -h * 0.5 && delta > -h * 1.2 : delta > h * 0.2 && delta < h * 0.9;
+        return above ? delta < -h * 0.5 && delta > -h * 1.2 : delta > h * (isIntegral ? 0.16 : 0.2) && delta < h * 0.9;
       }).sort((a,b)=>a.x-b.x);
       if (!list.length || list.some((r) => Math.abs(baseOf(r)-baseOf(list[0])) > list[0].height * 0.2) ||
         list.some((r,i) => i && r.x-right(list[i-1]) > list[0].height * 0.4)) return [];
       return list;
     };
     const lower = row(false), upper = isLimit ? [] : row(true);
-    if (!lower.length || (isLimit ? !lower.some((r)=>r.text === '→') : !lower.some((r)=>r.text === '='))) continue;
-    const latex = `${isLimit ? '\\lim' : '\\sum'}_{${words(lower)}}${upper.length ? `^{${words(upper)}}` : ''}`;
-    const textHeight = isLimit ? h / 1.2 : h / 1.8;
-    const baseline = baseOf(op) - (isLimit ? textHeight * 0.1 : textHeight * 0.28);
+    // PDF.js can return the whole lower limit as one styled run ("x → 2",
+    // "k = 1"). The token's contents, not run boundaries, identify the operator.
+    if (!lower.length || (isIntegral ? !upper.length : !lower.some((r) => (isLimit ? /→/ : /=/).test(r.text)))) continue;
+    const latex = `${isLimit ? '\\lim' : isIntegral ? '\\int' : '\\sum'}_{${words(lower)}}${upper.length ? `^{${words(upper)}}` : ''}`;
+    const textHeight = isLimit ? h / 1.2 : isIntegral
+      ? Math.min(h / 2, Math.max(...lower.map(r => r.height), ...upper.map(r => r.height)) / 0.68)
+      : h / 1.8;
+    const baseline = baseOf(op) - (isLimit ? textHeight * 0.1 : isIntegral ? h * 0.15 : textHeight * 0.28);
     fold(op,[...lower,...upper],latex,baseline,textHeight);
     events.push({kind:'operatorLimits',sourceIds:op.sourceIds,latex});
   }
@@ -295,7 +303,7 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
   // Its right script belongs to the final atom, never to a guessed new base.
   const plainBase = (r: Run) => !r.latex && !bar(r) && !radical(r) &&
     r.mathRole !== 'vectorArrow' && (r.equation
-      ? /^[A-Za-z\u0370-\u03ff0-9.,+−×÷/<>=→←↔⇌()[\]\s-]*[A-Za-z\u0370-\u03ff0-9]$/u.test(r.text) && r.text !== 'lim'
+      ? /^[A-Za-z\u0370-\u03ff0-9.,+−×÷/<>=→←↔⇌()[\]{}\s-]*[A-Za-z\u0370-\u03ff0-9)\]}]$/u.test(r.text) && /[A-Za-z\u0370-\u03ff0-9]/u.test(r.text) && r.text !== 'lim'
       : atomicText.test(r.text) || /^\d+(?:\.\d+)?$/.test(r.text) || /^,?\s*[A-Za-z]+(?:,\s*[A-Za-z]+)+$/.test(r.text) ||
         (/^[가-힣]{1,8}$/u.test(r.text) && !!operandOwners(r)));
   const elementSymbols = new Set(('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe Cs Ba La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf Ta W Re Os Ir Pt Au Hg Tl Pb Bi Po At Rn Fr Ra Ac Th Pa U Np Pu Am Cm Bk Cf Es Fm Md No Lr Rf Db Sg Bh Hs Mt Ds Rg Cn Nh Fl Mc Lv Ts Og').split(' '));
@@ -418,6 +426,19 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
   for (const s of active()) {
     if (bar(s) || radical(s) || s.mathRole === 'vectorArrow' || (s.latex ? !compounds : !scriptText.test(s.text)))
       continue;
+    // A sign before a raised fraction belongs to that fraction. Defer it until
+    // the numerator/denominator are reconstructed instead of reserving the
+    // base's superscript slot for the sign alone (4^{-} followed by 1/2).
+    if (!s.latex && active().some(line => bar(line) && !roofs.has(line.id) &&
+      Math.abs(line.height - s.height) < s.height * 0.18 &&
+      line.x - right(s) >= -s.height * 0.12 && line.x - right(s) <= s.height * 0.4 &&
+      Math.abs(baseOf(line) - line.height * 0.32 - baseOf(s)) < s.height * 0.2 && !across(s, line))) continue;
+    // A coefficient and a following raised radical form one exponent. Wait
+    // for the radical roof to own its radicand before occupying the script.
+    if (!s.latex && active().some(root => radical(root) && roofFor.has(root.id) &&
+      Math.abs(root.height - s.height) < s.height * 0.18 &&
+      root.x - right(s) >= -s.height * 0.12 && root.x - right(s) <= s.height * 0.4 &&
+      Math.abs(baseOf(root) - baseOf(s)) < s.height * 0.2 && !across(s, root))) continue;
     const candidates = active()
       .filter(
         (b) =>
@@ -426,7 +447,7 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
           !radical(b) &&
           s.height <= b.height * 0.82 &&
           s.height >= b.height * 0.4 &&
-          (b.latex ? compounds && !/^\\(?:lim|sum)/.test(b.latex) : plainBase(b)) &&
+          (b.latex ? compounds && !/^\\(?:lim|sum|int)/.test(b.latex) : plainBase(b)) &&
           s.x - right(b) >= -b.height * 0.22 &&
           s.x - right(b) <= b.height * 0.28 &&
           !across(b, s) && sameScriptContainer(b, s),
@@ -436,7 +457,12 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
         ({ b, delta }) =>
           !rightScriptSlots.get(b.id)?.[delta < 0 ? 'sup' : 'sub'] &&
           Math.abs(delta) >= b.height * (b.equation && delta < 0 ? 0.18 : 0.08) &&
-          Math.abs(delta) <= b.height * (s.latex ? 1.3 : 0.7),
+          Math.abs(delta) <= b.height * (s.latex || active().some(r =>
+            /^\\(?:frac|sqrt)\b/.test(r.latex ?? '') &&
+            Math.abs(r.height - s.height) < s.height * 0.18 &&
+            Math.abs(baseOf(r) - baseOf(s)) < s.height * 0.2 &&
+            r.x - right(s) >= -s.height * 0.12 && r.x - right(s) <= s.height * 0.4 &&
+            !across(s, r) && sameScriptContainer(s, r)) ? 1.3 : 0.7),
       )
       .sort((a, b) => Math.abs(s.x - right(a.b)) - Math.abs(s.x - right(b.b)));
     if (!candidates.length) continue;
@@ -469,15 +495,14 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
               !group.includes(r) &&
               r.id !== base.id &&
               r.equation === last.equation &&
-              !r.latex &&
-              scriptText.test(r.text) &&
+              (r.latex ? compounds && /^\\(?:sqrt(?:\[[^\]]+\])?|frac)\{/.test(r.latex) : scriptText.test(r.text) || /^[()]$/.test(r.text)) &&
               Math.abs(r.height - last.height) < last.height * 0.16 &&
               Math.abs(baseOf(r) - baseOf(last)) < last.height * 0.18 &&
               r.x - right(last) >= -last.height * 0.1 &&
               // Use the same local-row tolerance as baseline composition;
               // signed exponents have wider spacing after the sign glyph.
               r.x - right(last) <= last.height * 0.35 &&
-              right(r) - base.x < base.height * 2.5 &&
+              right(r) - right(base) < base.height * 12 &&
               !across(last, r) && operandOwners(last) === operandOwners(r),
           )
           .sort((a, b) => a.x - b.x)[0];
@@ -532,13 +557,23 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
     const baseline = inside.reduce((a,b) => a.height >= b.height ? a : b).baseline;
     // Multi-baseline content not already a fraction is ambiguous: retain it.
     if (inside.some((r) => Math.abs(baseOf(r) - baseline) > h * 0.3)) continue;
-    const latex = `\\sqrt{${words(inside)}}`;
-    fold(root, [roof, ...inside], latex, baseline, h);
+    // The root index sits in the upper-left crook, sometimes horizontally
+    // inside the radical glyph's advance box. It is neither a coefficient nor
+    // a power of the function preceding the radical.
+    const indices = active().filter(r => r.id !== root.id && r.id !== roof.id && !inside.includes(r) &&
+      !r.latex && /^\d+$/.test(r.text) && r.equation &&
+      r.height >= h * 0.35 && r.height <= h * 0.68 &&
+      r.x >= root.x - h * 0.25 && right(r) <= roof.x - h * 0.05 &&
+      baseline - baseOf(r) > h * 0.2 && baseline - baseOf(r) < h * 0.8 && !across(root, r));
+    const index = indices.length === 1 ? indices : [];
+    const latex = `\\sqrt${index.length ? `[${words(index)}]` : ''}{${words(inside)}}`;
+    fold(root, [roof, ...inside, ...index], latex, baseline, h);
     events.push({ kind: 'radical', sourceIds: root.sourceIds, latex });
   }
 
   };
   reduceRadicals();
+  attachScripts(true);
 
   // A verified HyhwpEQ fraction-bar glyph has its text baseline BELOW the
   // actual bar. Its operands occupy baseline bands -1.0em and +0.34em.
@@ -593,6 +628,17 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
 
 
   reduceRadicals();
+  for (const fraction of active().filter(r => r.latex?.startsWith('\\frac{'))) {
+    const signs = active().filter(r => r.id !== fraction.id && !r.latex && /^[+−-]$/.test(r.text) &&
+      Math.abs(r.height - fraction.height) < fraction.height * 0.18 &&
+      Math.abs(baseOf(r) - baseOf(fraction)) < fraction.height * 0.2 &&
+      fraction.x - right(r) >= -fraction.height * 0.12 && fraction.x - right(r) <= fraction.height * 0.4 &&
+      !across(r, fraction) && sameScriptContainer(r, fraction));
+    if (signs.length !== 1) continue;
+    const sign = signs[0], latex = expr(sign) + expr(fraction);
+    fold(fraction, [sign], latex, baseOf(fraction), fraction.height);
+    events.push({ kind: 'signedFraction', sourceIds: fraction.sourceIds, latex });
+  }
   attachScripts(true);
 
   for (const [stemId, head] of vectorPairs) {
@@ -611,7 +657,7 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
   // Tall delimiters have stretched glyph metrics that are not the baseline of
   // their contents. Pair them first, then retain the contents' baseline; a
   // raised atom beside the original closing glyph is an outer power.
-  const opening: Record<string,string> = {')':'(',']':'[','}':'{'};
+  const opening: Record<string,string> = {')':'(',']':'[','}':'{','|':'|'};
   for (const close of active().filter((r)=>opening[r.text]).sort((a,b)=>a.x-b.x)) {
     const open = active().filter((r)=>r.text===opening[close.text] && r.x<close.x &&
       Math.abs(r.height-close.height)<close.height*0.18 &&
@@ -624,8 +670,15 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
       baseOf(r)>Math.min(open.y,close.y)-glyphHeight*0.1 &&
       r.y<Math.max(baseOf(open),baseOf(close))+glyphHeight*0.2);
     if (!inside.length || inside.some((r)=>!r.equation || bar(r) || radical(r) || /[⎧⎨⎩⎪]/.test(r.text))) continue;
-    const main=inside.reduce((a,b)=>a.height>=b.height?a:b), h=main.height, baseline=baseOf(main);
-    if (inside.some((r)=>Math.abs(baseOf(r)-baseline)>h*0.2)) continue;
+    // In set-builder notation the condition separator is stretched along with
+    // the outer braces. Its font baseline is not the operands' reading line.
+    const setSeparator = (r: Run) => open.text==='{' && r.text==='|' &&
+      Math.abs(r.height-glyphHeight)<glyphHeight*0.18 &&
+      Math.abs(baseOf(r)-baseOf(open))<glyphHeight*0.18;
+    const operands=inside.filter((r)=>!setSeparator(r));
+    if (!operands.length) continue;
+    const main=operands.reduce((a,b)=>a.height>=b.height?a:b), h=main.height, baseline=baseOf(main);
+    if (inside.some((r)=>!setSeparator(r) && Math.abs(baseOf(r)-baseline)>h*0.2)) continue;
     const powers=active().filter((r)=>r.id!==close.id && !inside.includes(r) && !r.latex &&
       /^[A-Za-z0-9+−-]+$/.test(r.text) && r.height<=h*0.82 && r.height>=h*0.4 &&
       r.x-right(close)>=-h*0.15 && r.x-right(close)<=h*0.28 &&
@@ -647,8 +700,9 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
   // inside an equation (e.g. a compound unit). Its two adjacent equation
   // operands and shared baseline are the evidence, not the surrounding topic.
   // Without this bridge, composing only equation-font atoms would skip the
-  // dot and move it after the whole expression in reading order.
-  for (const dot of active().filter(r => !r.equation && /^[·‧⋅]$/.test(r.text))) {
+  // dot and move it after the whole expression in reading order. Likewise a
+  // printed prime directly following a geometric label belongs to that label.
+  for (const dot of active().filter(r => !r.equation && /^[·‧⋅′]$/.test(r.text))) {
     const h = dot.height;
     if (dot.width <= 0 || dot.width > h * 0.7) continue;
     const neighbors = active().filter(r => r.equation && !bar(r) && !radical(r) &&
@@ -660,9 +714,14 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
     const next = neighbors.filter(r => r.x > dot.x &&
       r.x - right(dot) >= -h * 0.22 && r.x - right(dot) <= h * 0.35)
       .sort((a, b) => a.x - b.x)[0];
-    if (!left || !next) continue;
+    if (!left) continue;
+    if (dot.text === '′') {
+      const geometricLabel = /^(?:∠)?[A-Z]{1,3}$/.test(left.text);
+      const derivative = /^[A-Za-z]$/.test(left.text) && next?.text.startsWith('(');
+      if (!geometricLabel && !derivative) continue;
+    } else if (!next) continue;
     dot.equation = true;
-    dot.latex = '\\cdot ';
+    dot.latex = dot.text === '′' ? "'" : '\\cdot ';
     events.push({ kind: 'inlineMathOperator', sourceIds: dot.sourceIds, latex: dot.latex });
   }
 
@@ -718,16 +777,19 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
     const bottom=pieces.filter((r)=>r.text==='⎩' && baseOf(r)>baseOf(middle)).sort((a,b)=>a.y-b.y)[0];
     if (!top || !bottom || baseOf(bottom)-top.y>h*12) continue;
     const brace=pieces.filter((r)=>r.y>=top.y-h*0.1 && baseOf(r)<=baseOf(bottom)+h*0.1);
-    const candidates=merged.filter((r)=>!removed.has(r.id) && r.equation && !brace.includes(r) &&
+    const candidates=merged.filter((r)=>!removed.has(r.id) && (r.equation || /^[()]$/.test(r.text) || /[가-힣]/.test(r.text)) && !brace.includes(r) &&
       r.x>=right(middle)-h*0.1 && baseOf(r)>=top.y && baseOf(r)<=baseOf(bottom)+h*0.2 &&
       !bar(r) && !radical(r) && !/[⎧⎨⎩⎪]/.test(r.text) && !across(middle,r));
-    const seeds=candidates.filter((r)=>r.x-right(middle)<h*1.25).sort((a,b)=>baseOf(a)-baseOf(b));
+    const seeds=candidates.filter((r)=>r.equation && r.x-right(middle)<h*1.25).sort((a,b)=>baseOf(a)-baseOf(b));
     const rows: Run[][]=[];
     for (const seed of seeds) {
       if (rows.some((row)=>row.includes(seed))) continue;
       const row=[seed];
-      for (const next of candidates.filter((r)=>r.x>seed.x && Math.abs(baseOf(r)-baseOf(seed))<h*0.2).sort((a,b)=>a.x-b.x)) {
-        if (next.x-right(row[row.length-1])>h*2.5) break;
+      for (const next of candidates.filter((r)=>r.x>seed.x && Math.abs(baseOf(r)-baseOf(seed))<h*0.3).sort((a,b)=>a.x-b.x)) {
+        if (next.x-right(row[row.length-1])>h*(next.text === '(' ? 4 : 2.5)) break;
+        // Ordinary prose is part of a cases row only inside its printed
+        // parenthesized condition. Never consume adjacent explanatory prose.
+        if (!next.equation && next.text !== '(' && !row.some(r => r.text === '(')) break;
         row.push(next);
       }
       rows.push(row);
@@ -735,7 +797,8 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
     if (rows.length<2 || rows.some((row,i)=>i && baseOf(row[0])-baseOf(rows[i-1][0])<h*0.7)) continue;
     const cuts=rows.map((row)=>{
       const gaps=row.slice(1).map((r,i)=>({index:i+1,gap:r.x-right(row[i])})).sort((a,b)=>b.gap-a.gap);
-      return gaps[0]?.gap>h*0.8?gaps[0].index:0;
+      const condition = row.findIndex(r => r.text === '(');
+      return condition > 0 ? condition : gaps[0]?.gap>h*0.8?gaps[0].index:0;
     });
     const columns=cuts.every(Boolean) && Math.max(...rows.map((row,i)=>row[cuts[i]].x))-Math.min(...rows.map((row,i)=>row[cuts[i]].x))<h*0.35;
     const content=rows.map((row,i)=>columns?`${words(row.slice(0,cuts[i]))}&${words(row.slice(cuts[i]))}`:words(row)).join('\\\\');
@@ -749,7 +812,7 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
   }
   const finalRuns=merged.filter((r)=>!removed.has(r.id));
   for (const r of finalRuns) {
-    if (bar(r) || radical(r) || /[⎧⎨⎩⎪]/.test(r.text) || /^(lim|Σ|∑)$/.test(r.text))
+    if (bar(r) || radical(r) || /[⎧⎨⎩⎪]/.test(r.text) || /^(lim|Σ|∑|∫)$/.test(r.text))
       warnings.push({
         kind: 'unresolvedMathStructure',
         sourceIds: r.sourceIds,
@@ -767,7 +830,9 @@ export function reconstructMathRuns(input: PageText[], rules: Rule[] = []) {
       ...r,
       // Some producers store l/o/g as three glyphs. Promote names only after
       // those atoms have been joined inside a reconstructed math expression.
-      text: latex || sourceMathLatex ? `$${(latex ?? sourceMathLatex!).replace(/(?<![\\A-Za-z])(sin|cos|tan|log|ln)(?![A-Za-z])/g, '\\$1')}$` : r.text,
+      text: latex || sourceMathLatex ? `$${(latex ?? sourceMathLatex!)
+        .replace(/\\mathrm\{(sin|cos|tan|log|ln)\}/g, '\\$1')
+        .replace(/(?<![\\A-Za-z])(sin|cos|tan|log|ln)(?![A-Za-z])/g, '\\$1')}$` : r.text,
     }))
     .sort((a, b) => a.y - b.y || a.x - b.x);
   return { items: result, warnings, events, sourceConserved };

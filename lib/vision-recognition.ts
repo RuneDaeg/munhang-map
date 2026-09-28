@@ -5,8 +5,9 @@ import { countUnresolvedGlyphs, glyphWarning } from './pdf-text';
 import { overlayQuestionBoxes, parseQuestionContent, questionPlainText, questionTextFromBlocks, restoreQuestionStructure } from './question-content';
 import { hasDuplicatedStem, includesRecognizedChoices, numberedApiChoices, preserveQuestionParts } from './question-completeness';
 import { preserveSourceStructures } from './structure-completeness';
-import { hasMissingSourcePrescripts, hasMisplacedSourceScripts, mathQualityIssues } from './math-quality';
+import { hasMissingSourcePrescripts, hasMissingSourceScripts, hasMisplacedSourceScripts, mathQualityIssues } from './math-quality';
 import { preserveSourceTextFormatting } from './source-text-formatting';
+import { questionLabel } from './question-context';
 
 type NormalizedBox = [number, number, number, number];
 
@@ -85,28 +86,32 @@ export async function enhanceQuestionsWithVision(
   const warnings: string[] = [];
   let completed = 0;
   for (const [index, question] of questions.entries()) {
+    const label = questionLabel(question);
     try {
       const captures = question.questionCaptures;
       const image = captures?.length ? await joinCaptures(captures) : question.sourcePageImage;
-      if (!image) throw new Error(`${question.number}번 원문 캡처가 없습니다.`);
+      if (!image) throw new Error(`${label} 원문 캡처가 없습니다.`);
       const subject = question.examSubject ? `시험지 상단 과목: ${question.examSubject.label}\n` : '';
-      const result = await recognizeImage(image, [{ number: question.number, text: `${subject}${question.text}` }]);
+      const identity = question.sourceQuestionNumber !== undefined || question.sectionLabel
+        ? `문항 식별: ${label}. 이미지의 인쇄 번호와 별개로 응답 JSON의 number는 요청 식별자 ${question.number}를 그대로 사용하세요.\n`
+        : '';
+      const result = await recognizeImage(image, [{ number: question.number, text: `${subject}${identity}${question.text}` }]);
       const recognized = result.questions?.find((item) => item.number === question.number);
-      if (!recognized) throw new Error(`${question.number}번 문항의 판독 결과가 없습니다.`);
+      if (!recognized) throw new Error(`${label} 문항의 판독 결과가 없습니다.`);
       const completion = completeQuestionText(question.text, recognized);
-      if (completion.warning) warnings.push(`${question.number}번: ${completion.warning}`);
+      if (completion.warning) warnings.push(`${label}: ${completion.warning}`);
       // Diagnostics contain no exam text, images, provider URLs, or credentials.
       console.info('[recognition-structure]', { number: question.number, source: completion.source, warning: Boolean(completion.warning) });
       let assessmentText = completion.source === 'original' ? question.assessmentText : question.sharedPassage
         ? preserveSourceTextFormatting(normalizeQuestionText([recognized.indirectStem,recognized.directStem,...numberedApiChoices(recognized.choices)].filter(s=>typeof s==='string').join('\n')), question.assessmentText ?? question.text)
         : completion.text;
-      const keptAssessment = completion.source !== 'original' && Boolean(question.assessmentText) && (hasMissingSourcePrescripts(assessmentText ?? '', question.assessmentText!) || hasMisplacedSourceScripts(assessmentText ?? '', question.assessmentText!));
+      const keptAssessment = completion.source !== 'original' && Boolean(question.assessmentText) && (hasMissingSourcePrescripts(assessmentText ?? '', question.assessmentText!) || hasMisplacedSourceScripts(assessmentText ?? '', question.assessmentText!) || hasMissingSourceScripts(assessmentText ?? '', question.assessmentText!));
       if (keptAssessment) {
         assessmentText = question.assessmentText;
-        warnings.push(`${question.number}번 개별 발문: 원자핵의 왼쪽 위·아래 첨자 또는 일반 변수의 오른쪽 첨자가 누락되거나 바뀌어 기존 발문을 보존했습니다. 원문 이미지와 비교해 주세요.`);
+        warnings.push(`${label} 개별 발문: 원자핵의 왼쪽 위·아래 첨자, 일반 변수의 오른쪽 첨자 또는 지수·연산자 범위가 누락되거나 바뀌어 기존 발문을 보존했습니다. 원문 이미지와 비교해 주세요.`);
       }
       const assessmentIssues = mathQualityIssues(assessmentText ?? '');
-      if (assessmentIssues.length) warnings.push(`${question.number}번 개별 발문: ${assessmentIssues.map(issue=>issue.message).join(' ')}`);
+      if (assessmentIssues.length) warnings.push(`${label} 개별 발문: ${assessmentIssues.map(issue=>issue.message).join(' ')}`);
       enhanced[index] = {
         ...question,
         text: completion.text,
@@ -156,7 +161,7 @@ function completeQuestionText(original: string, recognized: VisionItem) {
   const hasStructure = (text: string) => parseQuestionContent(text).some((block) => block.kind !== 'text');
   const baseline = readableLength(full) >= readableLength(stemText) ? full : stemText;
   const structured = questionTextFromBlocks(recognized.blocks);
-  const canUseBlocks = structured !== undefined && readableLength(structured) >= readableLength(baseline) * 0.9 && coversText(structured, baseline) && !hasMissingSourcePrescripts(structured, baseline) && !hasMisplacedSourceScripts(structured, baseline) && includesRecognizedChoices(questionPlainText(structured), recognized.choices);
+  const canUseBlocks = structured !== undefined && readableLength(structured) >= readableLength(baseline) * 0.9 && coversText(structured, baseline) && !hasMissingSourcePrescripts(structured, baseline) && !hasMisplacedSourceScripts(structured, baseline) && !hasMissingSourceScripts(structured, baseline) && includesRecognizedChoices(questionPlainText(structured), recognized.choices);
   const overlay = !canUseBlocks ? overlayQuestionBoxes(baseline, structured ?? (hasStructure(full) ? full : '')) : undefined;
   let candidate = canUseBlocks ? structured : overlay ?? baseline;
   let source = canUseBlocks ? 'blocks' : overlay ? 'anchored-boxes' : 'text';
@@ -182,6 +187,12 @@ function completeQuestionText(original: string, recognized: VisionItem) {
   if(protectedStructure.text===normalizedOriginal && protectedStructure.warning) source='original';
   warning=[warning,protectedStructure.warning].filter(Boolean).join(' ');
   let text = normalizeQuestionText(restoreQuestionStructure(protectedStructure.text));
+  if (source !== 'original' && !hasDuplicatedStem(normalizedOriginal)
+    && hasMissingSourceScripts(text, normalizedOriginal)) {
+    text = restoreQuestionStructure(normalizedOriginal);
+    source = 'original';
+    warning = [warning, 'AI 판독문에서 기존 수식의 아래첨자·지수 또는 연산자 범위가 누락되어 기존 추출문을 보존했습니다. 원문 이미지와 비교해 주세요.'].filter(Boolean).join(' ');
+  }
   const mathIssues=mathQualityIssues(text);
   if(mathIssues.length || hasDuplicatedStem(text)) {
     if(normalizedOriginal.trim() && !mathQualityIssues(normalizedOriginal).length && !hasDuplicatedStem(normalizedOriginal)) {

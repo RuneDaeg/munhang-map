@@ -44,6 +44,17 @@ test('decorations, matrices and stretchy parentheses become native structures', 
   assert.equal(latexToHwpScript(String.raw`\left(\frac12\right)`), 'LEFT ( {1} OVER {2} RIGHT )');
 });
 
+test('ordinary vertical bars in sets, conditional probabilities and cases remain native', () => {
+  assert.equal(latexToHwpScript(String.raw`P(A|B)`), '{it P} ( {it A} {rm |} {it B} )');
+  assert.equal(latexToHwpScript(String.raw`\left\{t|t\ge\frac32\right\}`), 'LEFT { {it t} {rm |} {it t} GEQ {3} OVER {2} RIGHT }');
+  assert.equal(latexToHwpScript(String.raw`|x|`), '{rm |} {it x} {rm |}');
+  assert.equal(latexToHwpScript(String.raw`a\mid b`), '{it a} | {it b}');
+  const cases = latexToHwpScript(String.raw`\begin{cases}x&(|x|<1)\\0&(|x|\ge1)\end{cases}`);
+  assert.match(cases, /^CASES /);
+  assert.equal((cases.match(/\|/g) ?? []).length, 4);
+  assert.doesNotMatch(cases, /\\|\$|∣/);
+});
+
 test('unsupported structures, fonts, unsafe text and malformed input fail visibly', () => {
   for (const source of ['', '\\frac{1}', String.raw`\noSuchCommand{x}`, String.raw`\color{red}{x}`, String.raw`\phantom{x}`, String.raw`\cancel{x}`, String.raw`\mathbb{R}`, String.raw`\mathsf{x}`, String.raw`\begin{aligned}x&=1\\y&=2\end{aligned}`, String.raw`\left\{x\middle|x>0\right\}`, '\\text{a"b}', '\\text{\\textbackslash frac}', 'a\u0001b', 'x'.repeat(20_001)]) {
     assert.throws(() => latexToHwpxEquation(source, { id: 1 }), /한글 편집형 수식으로 변환할 수 없습니다/, source);

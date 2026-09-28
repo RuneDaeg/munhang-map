@@ -10,6 +10,8 @@ const validItemId = (value) => typeof value === 'string' && /^[a-f0-9]{64}:[a-f0
 function questionSnapshot(value, fileName) {
   if (!value || !Number.isInteger(value.number) || value.number < 1 || value.number > 10000 || !Number.isFinite(value.confidence) || value.confidence < 0 || value.confidence > 100) throw new Error('문항 번호 또는 신뢰도가 올바르지 않습니다.');
   const question = { number: value.number, confidence: value.confidence, sourceFileName: fileName };
+  if (Number.isInteger(value.sourceQuestionNumber) && value.sourceQuestionNumber >= 1 && value.sourceQuestionNumber <= 200) question.sourceQuestionNumber = value.sourceQuestionNumber;
+  if (typeof value.sectionLabel === 'string' && value.sectionLabel.trim()) question.sectionLabel = value.sectionLabel.replace(/[\r\n\t]/g, ' ').trim().slice(0, 100);
   for (const key of ['type', 'text', 'standardCode', 'standard', 'domain']) {
     if (typeof value[key] !== 'string' || value[key].length > (key === 'text' ? 200000 : 3000)) throw new Error('문항 텍스트 또는 성취기준이 올바르지 않습니다.');
     question[key] = value[key];
@@ -75,7 +77,7 @@ function createQuestionBank(directory) {
   }
   function writeRecord(record) {
     if (Buffer.byteLength(JSON.stringify(record)) > 80000000) throw new Error('한 PDF의 저장 크기는 80MB 이하로 제한됩니다.');
-    const summary = { items: record.items.map(({ id, savedAt, question }) => ({ id, sourceFileName: record.sourceFileName, savedAt, number: question.number, standardCode: question.standardCode, domain: question.domain, text: question.text.slice(0, 500), confidence: question.confidence })) };
+    const summary = { items: record.items.map(({ id, savedAt, question }) => ({ id, sourceFileName: record.sourceFileName, savedAt, number: question.number, sourceQuestionNumber: question.sourceQuestionNumber, sectionLabel: question.sectionLabel, standardCode: question.standardCode, domain: question.domain, text: question.text.slice(0, 500), confidence: question.confidence })) };
     atomicWrite(recordPath(record.sourceId), `${JSON.stringify(summary)}\n${JSON.stringify(record)}`);
   }
   function getItem(id) {

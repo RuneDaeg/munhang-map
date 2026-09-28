@@ -40,7 +40,7 @@ test('inspector source declares viewport-limited sticky layout and resets its bo
   const body = css.match(/\.question-inspector-body\s*\{([^}]+)\}/)[1];
   assert.match(body, /min-height: 0/); assert.match(body, /overflow-y: auto/);
   assert.ok(source.includes('<QuestionInspector key={`${fileName}-${selected}`}'));
-  assert.match(source, /\{question.number\}번 문항 정보/);
+  assert.match(source, /\{questionLabel\(question\)\} 문항 정보/);
   assert.match(source, /question-inspector-body[^\n]+tabIndex=\{0\}/);
   assert.ok(source.indexOf('문항 미리보기 · 수식·표·보기') < source.indexOf('<QuestionTextEditor ref={textRef}'));
   assert.match(source, /상자 \$\{boxCount\}개/);

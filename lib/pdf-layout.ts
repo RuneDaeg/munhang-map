@@ -96,6 +96,8 @@ export type PageLayout = {
   width: number;
   height: number;
   headerText: string;
+  /** Source masthead, not a curriculum mapping inferred from question content. */
+  sectionLabel?: string;
   bodyItems: PageText[];
   columns: Array<{
     left: number;
@@ -107,6 +109,9 @@ export type PageLayout = {
 };
 export type LocatedQuestion = {
   number: number;
+  /** Printed number when an internally unique sequence spans repeated sections. */
+  sourceQuestionNumber?: number;
+  sectionLabel?: string;
   page: number;
   text: string;
   regions: Array<{ page: number; box: CaptureBox }>;
@@ -157,9 +162,16 @@ function questionStart(line: PageText) {
   const match = line.text.match(/^\s*(?:문항\s*)?(\d{1,2})\s*[.)](\s*)(.*)$/);
   if (!match || Number(match[1]) < 1 || Number(match[1]) > 80) return null;
   // Decimal measurements and point values are not question numbers.
-  if ((!match[2] && /^\d/.test(match[3])) || match[3].startsWith('점'))
+  if ((!match[2] && /^\d/.test(match[3])) || /^점(?:\s*[\])]|$)/.test(match[3]))
     return null;
   return { number: Number(match[1]), rest: match[3] };
+}
+
+function mathSectionLabel(header: string) {
+  const compact = header.replace(/\s+/g, '');
+  const match = compact.match(/[（(](확률과통계|미적분|기하|공통)[）)]/)
+    ?? compact.match(/수학영역(확률과통계|미적분|기하|공통)/);
+  return match?.[1] === '확률과통계' ? '확률과 통계' : match?.[1];
 }
 
 export function layoutPage(
@@ -228,7 +240,18 @@ export function layoutPage(
   const firstQuestionY = markers.length
     ? Math.min(...markers.map((item) => item.y))
     : height * 0.2;
-  const headerLimit = Math.min(height * 0.23, firstQuestionY - 2);
+  // A masthead can be painted as paths/images, leaving just its page number in
+  // the text layer. Use an observed full-width rule joined to the long column
+  // divider to locate its bottom; do not interpret formula rows as a heading.
+  const mastheadRule = geometry?.rules?.filter(r => Math.abs(r.y1-r.y2) < 0.7
+    && r.x2-r.x1 > width * 0.65 && r.y1 > height * 0.05
+    && r.y1 < Math.min(height * 0.25, firstQuestionY - 2)
+    && geometry.rules?.some(v => Math.abs(v.x1-v.x2) < 0.7
+      && v.x1 > width * 0.4 && v.x1 < width * 0.6
+      && v.y2-v.y1 > height * 0.4 && v.y1 <= r.y1+2
+      && v.y2 > r.y1+height*0.4))
+    .sort((a,b)=>b.y1-a.y1)[0];
+  const headerLimit = mastheadRule?.y1 ?? Math.min(height * 0.23, firstQuestionY - 2);
   const headerLines = allLines.filter((line) => line.y < headerLimit);
   const headerText = [...headerLines.map((line) => line.text),
     ...new Set(ribbons.length ? [ribbons.filter((r, i) => ribbons.indexOf(r) === i)
@@ -240,12 +263,13 @@ export function layoutPage(
       line.text,
     ),
   );
-  const top = masthead.length
+  const fallbackTop = masthead.length
     ? Math.min(
         firstQuestionY - 3,
         Math.max(...masthead.map((line) => line.y + line.height)) + 5,
       )
     : Math.min(height * 0.065, firstQuestionY - 3);
+  const top = Math.max(fallbackTop, mastheadRule ? mastheadRule.y1 + 0.5 : 0);
   const footer = allLines.find(
     (line) =>
       line.y > height * 0.88 &&
@@ -276,6 +300,14 @@ export function layoutPage(
         (!twoColumns || (column === 0 ? i.x < midpoint : i.x >= midpoint)),
     );
     const lines = linesFrom(content, column);
+    const firstMarker = lines.findIndex(line => Boolean(questionStart(line)));
+    const typeHeadings = lines.filter((line, index) => index < firstMarker
+      && /^(?:5지선다형|단답형)$/.test(line.text.replace(/\s/g, '')));
+    // These answer-mode titles belong to the section, not the preceding
+    // question on another page/column. Keep nearby exponent-only rows intact.
+    content = content.filter(i => !typeHeadings.some(line => i.y >= line.y-0.5
+      && i.y+i.height <= line.y+line.height+0.5 && i.x >= line.x-0.5
+      && i.x+i.width <= line.x+line.width+0.5));
     const notice = lines.find(
       (line, index) =>
         line.y > height * 0.75 &&
@@ -307,6 +339,7 @@ export function layoutPage(
     width,
     height,
     headerText,
+    sectionLabel: mathSectionLabel(headerText),
     bodyItems,
     columns,
   };
@@ -336,19 +369,35 @@ export function locateQuestions(pages: PageLayout[]): LocatedQuestion[] {
         '문항 번호를 찾지 못해 페이지 전체를 보존했습니다. 문항 경계를 확인해 주세요.',
     }));
   }
-  // Local ascending order filters numbered list items; a new subject/page can restart at 1.
+  // Local ascending order filters numbered lists. Printed numbers can restart
+  // at 23 (elective booklets), not just 1; require a source masthead change.
   const accepted: typeof starts = [];
   for (const start of starts) {
     const previous = accepted.at(-1);
+    const page = columns[start.columnIndex].page;
+    const previousPage = previous ? columns[previous.columnIndex].page : undefined;
+    const changedSection = page.page !== previousPage?.page && page.sectionLabel
+      && page.sectionLabel !== previousPage?.sectionLabel;
     if (
       !previous ||
       start.number > previous.number ||
+      changedSection ||
       (start.number === 1 &&
         columns[start.columnIndex].page.page !==
           columns[previous.columnIndex].page.page)
     )
       accepted.push(start);
   }
+  const repeatedNumbers = new Set(accepted.map(s=>s.number)).size !== accepted.length;
+  let sectionIndex = 0;
+  const sectionIndices = new Map(accepted.map((start,index)=>{
+    const previous = accepted[index-1];
+    const page = columns[start.columnIndex].page;
+    const prior = previous ? columns[previous.columnIndex].page : undefined;
+    if (previous && page.page !== prior?.page && (start.number <= previous.number
+      || (page.sectionLabel && page.sectionLabel !== prior?.sectionLabel))) sectionIndex++;
+    return [start,sectionIndex] as const;
+  }));
   // Register passage regions once for the whole document. Each question keeps
   // its own assessment region; proximity or a one-page lookback is not ownership.
   const passages = columns.flatMap((column, ci) => column.lines.flatMap((line, li) => {
@@ -369,7 +418,7 @@ export function locateQuestions(pages: PageLayout[]): LocatedQuestion[] {
         (part.right-part.left)/part.page.width,(bottom-top)/part.page.height]});
       lines.push(...part.lines.slice(from,to).map(l=>l.text));
     }
-    return [{ci,li,range,regions,text:lines.join('\n'),pages:[...new Set(regions.map(r=>r.page))]}];
+    return [{ci,li,range,regions,sectionIndex:sectionIndices.get(first),text:lines.join('\n'),pages:[...new Set(regions.map(r=>r.page))]}];
   }));
   return accepted.map((start, index) => {
     const next = accepted[index + 1];
@@ -432,7 +481,8 @@ export function locateQuestions(pages: PageLayout[]): LocatedQuestion[] {
       );
       if(nextPassage>=0) break;
     }
-    const passage = passages.filter(p => start.number >= p.range[0] && start.number <= p.range[1]
+    const passage = passages.filter(p => p.sectionIndex === sectionIndices.get(start)
+      && start.number >= p.range[0] && start.number <= p.range[1]
       && (p.ci < start.columnIndex || (p.ci === start.columnIndex && p.li < start.lineIndex))).at(-1);
     if (passage) { regions.unshift(...passage.regions); text.unshift(passage.text); }
     const warning =
@@ -440,7 +490,9 @@ export function locateQuestions(pages: PageLayout[]): LocatedQuestion[] {
         ? `다음 문항 번호가 ${next.number}번으로 이어집니다. 캡처에 누락된 문항이 함께 들어갔는지 확인해 주세요.`
         : undefined;
     return {
-      number: start.number,
+      number: repeatedNumbers ? index+1 : start.number,
+      ...(repeatedNumbers ? {sourceQuestionNumber:start.number} : {}),
+      sectionLabel: columns[start.columnIndex].page.sectionLabel,
       page: columns[start.columnIndex].page.page,
       text: text.join('\n').trim(),
       regions,

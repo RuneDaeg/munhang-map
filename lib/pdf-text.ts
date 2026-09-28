@@ -36,6 +36,8 @@ const equationCharacters: Record<number, string> = {
   0xe013: 'T',
   0xe015: 'V',
   0xe016: 'W',
+  0xe017: 'X',
+  0xe019: 'Z',
   0xe034: '1',
   0xe035: '2',
   0xe036: '3',
@@ -58,6 +60,7 @@ const equationCharacters: Record<number, string> = {
   0xe053: '.',
   0xe054: '/',
   0xe056: '>',
+  0xe05b: '∫',
   0xe05c: '√',
   0xe06d: '─', // structural fraction/radical rule, never a minus sign
   0xe06e: '→', // vector accent: geometry must attach it to its source base
@@ -69,11 +72,13 @@ const equationCharacters: Record<number, string> = {
   0xe0a7: 'λ',
   0xe0a8: 'μ',
   0xe0ad: 'ρ',
+  0xe0ae: 'σ',
   0xe10e: 'ε',
   0xe0e5: 'a',
   0xe0e6: 'b',
   0xe0e7: 'c',
   0xe0e8: 'd',
+  0xe0e9: 'e',
   0xe0eb: 'g',
   0xe0ec: 'h',
   0xe0ed: 'i',
@@ -89,6 +94,7 @@ const equationCharacters: Record<number, string> = {
   0xe0fb: 'w',
   0xe0fc: 'x',
   0xe0fd: 'y',
+  0xe0fe: 'z',
 };
 
 // Only fingerprints are distributed, never the copyrighted embedded font.
@@ -186,6 +192,14 @@ const verifiedOutlines: Record<string, string> = {
   '168:71d1d16a:2acaa4c': 'λ',
   '234:7880c6ed:ab830c3f': 'ρ',
   '236:127681cc:9abbef34': 'ε',
+  // 2026 math sample: individually rendered and checked against its embedded
+  // font, including integral signs and statistics / exponential variables.
+  '404:928898d8:3beb7ea0': '∫',
+  '224:835fe81d:cfc8188b': 'σ',
+  '354:600d98a3:afde3a41': 'X',
+  '406:8ce76e6d:4c82a563': 'z',
+  '128:6768cf35:46aa8593': 'Z',
+  '256:221d5271:dd05026d': 'e',
 };
 
 // The history source uses one broken ToUnicode value (U+F000) for BOTH title
@@ -297,6 +311,8 @@ const verifiedItalicOutlines = new Set([
   '308:8721e010:68f15606', '338:c1910d38:8fc0d924',
   '442:b582f127:e24eaa43',
   '430:e2ac64e5:b07828eb', // source italic beta, including an isolated biology label
+  '224:835fe81d:cfc8188b', '406:8ce76e6d:4c82a563',
+  '256:221d5271:dd05026d',
 ]);
 const verifiedMatrixOutlines = new Set([
   '378:73792c2c:83222c0', '292:f59e6245:6de39f23',
@@ -306,6 +322,7 @@ const verifiedMatrixOutlines = new Set([
   '268:7153a6b8:e73725f0', '278:97201fc:9165c32c',
   '472:8dca3b8c:64972b5a', '386:59265a18:38c60f06',
   '300:d0297d58:c85afc52',
+  '354:600d98a3:afde3a41', '128:6768cf35:46aa8593',
 ]);
 type SourceFontRole = 'roman' | 'italic' | 'matrix' | '';
 
@@ -503,6 +520,77 @@ type PositionedRun = PageText & {
   baseline: number;
   equation: boolean;
 };
+
+type PaintedText = ReturnType<typeof syntheticBoldAreas>[number];
+
+/** PDF.js can merge a tall bracket and normal operands into one text item.
+ * Recover only exact, painted glyph boundaries; never estimate equal character
+ * widths. Unknown fonts, missing glyphs and overprinted runs remain unchanged.
+ */
+export function splitEquationTextItems(
+  items: unknown[], viewport: number[], painted: PaintedText[],
+  decoders: Map<string, Map<string, string>>,
+): unknown[] {
+  const [a, b, c, d, e, f] = viewport, determinant = a * d - b * c;
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-10) return items;
+  const glyphs = painted.flatMap(area => (area.glyphs ?? []).map(glyph => ({
+    ...glyph, fontName: area.fontName, baseline: area.baseline, height: area.height,
+  })));
+  const roofs = glyphs.filter(g => decoders.get(g.fontName)?.get(g.text) === '─');
+  return items.flatMap(candidate => {
+    const item = candidate as Partial<TextItem>;
+    const decoder = item.fontName ? decoders.get(item.fontName) : undefined;
+    if (!decoder || !item.transform || typeof item.str !== 'string' ||
+      !Number.isFinite(item.width) || (item.width ?? 0) <= 0) return [candidate];
+    const t = item.transform, x = a * t[4] + c * t[5] + e,
+      baseline = b * t[4] + d * t[5] + f,
+      height = Math.hypot(a * t[2] + c * t[3], b * t[2] + d * t[3]),
+      right = x + item.width!;
+    if (!Number.isFinite(height) || height <= 0) return [candidate];
+    const decoded = Array.from(item.str).map(char => decoder.get(char) || char).join('');
+    // A roof may cover only AB in a merged "AB = 4" source run. Splitting at
+    // its edges lets the math parser keep the accent's original coverage.
+    const partialRoofs = roofs.filter(roof => roof.fontName === item.fontName &&
+      roof.baseline < baseline - height * .12 && roof.baseline > baseline - height * .85 &&
+      roof.right > x + height * .15 && roof.x < right - height * .15 &&
+      (roof.x > x + height * .15 || roof.right < right - height * .15));
+    if (!/[√()[\]{}|]/u.test(decoded) && !partialRoofs.length) return [candidate];
+    const baselineTolerance = /^[([{]/u.test(decoded) ? height * .3 : height * .18;
+    // PDF.js may omit the final character-spacing advance from a merged text
+    // item's width. Permit only a small final advance; the full source glyph
+    // sequence must still match, so neighbouring formula text cannot leak in.
+    const endTolerance = Math.max(.06, height * .12);
+    const source = glyphs.filter(g => g.fontName === item.fontName && g.text.trim() &&
+      g.x >= x - .06 && g.x < right && g.right <= right + endTolerance && g.right > g.x &&
+      Math.abs(g.baseline - baseline) <= baselineTolerance)
+      .sort((l, r) => l.x - r.x);
+    if (source.length < 2 || source.map(g => g.text).join('').replace(/\s/gu, '') !== item.str.replace(/\s/gu, '') ||
+      Math.abs(source[0].x - x) > .06 || Math.abs(source.at(-1)!.right - right) > endTolerance ||
+      // Delimiter/radical outlines can legitimately overlap slightly. Repeated
+      // painted glyphs are rejected by the exact text-sequence check above.
+      source.some((g, i) => i && g.x < source[i - 1].right - height*.12)) return [candidate];
+    const structural = (g: typeof source[number]) => /^[√()[\]{}|]$/u.test(decoder.get(g.text) || g.text);
+    const groups: typeof source[] = [];
+    for (const glyph of source) {
+      const group = groups.at(-1), previous = group?.at(-1);
+      const crossesRoof = previous && partialRoofs.some(roof => [roof.x, roof.right].some(edge =>
+        edge >= previous.right - height * .12 && edge <= glyph.x + height * .12));
+      if (!previous || structural(glyph) || structural(previous) || crossesRoof ||
+        Math.abs(glyph.height - previous.height) > height * .08 ||
+        Math.abs(glyph.baseline - previous.baseline) > height * .08) groups.push([glyph]);
+      else group!.push(glyph);
+    }
+    if (groups.length < 2) return [candidate];
+    return groups.map(group => {
+      const first = group[0], last = group.at(-1)!, scale = first.height / height;
+      const tx = first.x - e, ty = first.baseline - f;
+      return { ...item, str: group.map((g, i) => `${i && g.x - group[i - 1].right > first.height * .26 ? ' ' : ''}${g.text}`).join(''),
+        width: last.right - first.x,
+        transform: [t[0], t[1], t[2] * scale, t[3] * scale,
+          (d * tx - c * ty) / determinant, (-b * tx + a * ty) / determinant] };
+    });
+  });
+}
 export function joinEquationRuns(
   items: PositionedRun[],
   rules: Rule[] = [],
@@ -562,13 +650,19 @@ export function extractPositionedText(
   rules: Rule[] = [],
 ) {
   const { fonts: decoders, styles } = fontDecoders(operators, ops, getFont);
+  const equationDecoders = new Map([...decoders].filter(([id]) => {
+    try { return /(?:HyhwpEQ|HancomEQN)$/i.test(getFont(id)?.name ?? ''); }
+    catch { return false; }
+  }));
+  const sourceItems = splitEquationTextItems(items, viewport,
+    syntheticBoldAreas(operators, ops, viewport, true), equationDecoders);
   // This deliberately handles isolated source glyph items only. Mixed runs,
   // missing coordinates or unsupported glyph layouts remain unresolved.
   const titleMarks = items.some(candidate => (candidate as Partial<TextItem>).str?.trim() === '\uf000')
     ? positionedTitleMarks(operators, ops, viewport, getFont) : [];
   let recoveredGlyphs = 0;
   const positioned: PositionedRun[] = [];
-  for (const candidate of items) {
+  for (const candidate of sourceItems) {
     const item = candidate as Partial<TextItem>;
     if (
       typeof item.str !== 'string' ||

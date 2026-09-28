@@ -1,4 +1,5 @@
 import type { AnalyzedQuestion } from './pdf-analysis';
+import { questionLabel } from './question-context';
 import { questionPlainText } from './question-content';
 import { docxQuestionContent, hwpxQuestionContent, prepareHwpxTableStyles } from './table-export';
 import { prepareHwpxTextStyles } from './hwpx-text-styles';
@@ -39,7 +40,7 @@ export async function createStandardArchive(title: string, questions: AnalyzedQu
     totalBytes += data.length;
     if (totalBytes > 150_000_000) throw new Error('문서 묶음이 150MB를 넘습니다. 선택 문항을 나누어 내보내 주세요.');
     entries.push({ name, data });
-    for (const question of group.questions) csv.push([name, group.code, group.domain, question.sourceFileName || title, String(question.number)]);
+    for (const question of group.questions) csv.push([name, group.code, group.domain, question.sourceFileName || title, question.sectionLabel ? questionLabel(question) : String(question.sourceQuestionNumber ?? question.number)]);
     onProgress?.(index + 1, groups.length);
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
@@ -57,7 +58,7 @@ export function captureExportSummary(questions: AnalyzedQuestion[], title = '시
   return {
     imageCount: questions.reduce((count, question) => count + (question.questionCaptures?.length ?? 0), 0),
     missing,
-    missingLabels: missing.slice(0, 5).map((question) => `선택 ${questions.indexOf(question) + 1} · ${captureFileStem(question.sourceFileName || title)} ${question.number}번`).join(', '),
+    missingLabels: missing.slice(0, 5).map((question) => `선택 ${questions.indexOf(question) + 1} · ${captureFileStem(question.sourceFileName || title)} ${questionLabel(question)}`).join(', '),
     reviewCount: questions.filter((question) => question.captureWarning && !question.captureReviewed).length,
   };
 }
@@ -115,9 +116,10 @@ export async function createCaptureArchive(title: string, questions: AnalyzedQue
     if (!Number.isSafeInteger(question.number) || question.number < 1) throw new Error('문항 번호를 확인해 주세요.');
     const sourceStem = captureFileStem(question.sourceFileName || title);
     const safeStem = options.groupByStandard ? sourceStem.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, '_') : sourceStem;
-    const prefix = `${String(index + 1).padStart(3, '0')}_${safeStem}_${String(question.number).padStart(3, '0')}번`;
+    const section = question.sectionLabel ? `${captureFileStem(question.sectionLabel)}_` : '';
+    const prefix = `${String(index + 1).padStart(3, '0')}_${safeStem}_${section}${String(question.sourceQuestionNumber ?? question.number).padStart(3, '0')}번`;
     for (const [part, capture] of question.questionCaptures!.entries()) {
-      const invalid = () => new Error(`선택 ${index + 1} · ${captureFileStem(question.sourceFileName || title)} ${question.number}번의 ${part + 1}번째 캡처를 읽을 수 없습니다. 원본 PDF·검토 파일에서 캡처 범위를 다시 확인해 주세요.`);
+      const invalid = () => new Error(`선택 ${index + 1} · ${captureFileStem(question.sourceFileName || title)} ${questionLabel(question)}의 ${part + 1}번째 캡처를 읽을 수 없습니다. 원본 PDF·검토 파일에서 캡처 범위를 다시 확인해 주세요.`);
       if (!Number.isSafeInteger(capture.page) || capture.page < 1 || typeof capture.image !== 'string') throw invalid();
       // Never fetch URLs, substitute a whole source page, include visualChoices,
       // deduplicate shared passages, or re-encode images in this image-only path.
@@ -127,7 +129,7 @@ export async function createCaptureArchive(title: string, questions: AnalyzedQue
       const name = `${group ? group.folder + '/' : ''}${prefix}_${String(part + 1).padStart(2, '0')}_${capture.page}쪽.${header[1] === 'jpeg' ? 'jpg' : 'png'}`;
       // Only allowlisted mapping metadata, never question text, candidate codes,
       // image data, API settings or the source PDF's parent directory.
-      const csvPart = group ? captureCsvRow([name, group.code, question.standard, question.domain.trim() || group.domain, (question.sourceFileName || title).split(/[\\/]/).pop() || '시험지', String(question.number), String(part + 1), String(capture.page)]) : undefined;
+      const csvPart = group ? captureCsvRow([name, group.code, question.standard, question.domain.trim() || group.domain, (question.sourceFileName || title).split(/[\\/]/).pop() || '시험지', question.sectionLabel ? questionLabel(question) : String(question.sourceQuestionNumber ?? question.number), String(part + 1), String(capture.page)]) : undefined;
       const encoded = capture.image.slice(header[0].length);
       const expectedBytes = encoded.length / 4 * 3 - (encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0);
       if (totalBytes + expectedBytes + (csvPart?.length ?? 0) > 150_000_000) throw oversized();
@@ -169,11 +171,11 @@ export function createDocxBytes(title: string, questions: AnalyzedQuestion[]) {
   const images = collectPageImages(questions);
   const contents = questions.map((question) => {
     try { return docxQuestionContent(question.text); }
-    catch (error) { throw new Error(`${question.number}번 문항: ${error instanceof Error ? error.message : '수식 변환에 실패했습니다.'}`); }
+    catch (error) { throw new Error(`${questionLabel(question)} 문항: ${error instanceof Error ? error.message : '수식 변환에 실패했습니다.'}`); }
   });
   const body = questions.map((question, index) => `
-    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>${xml(`${question.number}번 문항`)}</w:t></w:r></w:p>
-    ${question.sourceFileName ? `<w:p><w:r><w:t>${xml(`원본: ${question.sourceFileName} · ${question.number}번`)}</w:t></w:r></w:p>` : ''}
+    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>${xml(`${questionLabel(question)} 문항`)}</w:t></w:r></w:p>
+    ${question.sourceFileName ? `<w:p><w:r><w:t>${xml(`원본: ${question.sourceFileName} · ${questionLabel(question)}`)}</w:t></w:r></w:p>` : ''}
     ${contents[index]}
     <w:p><w:pPr><w:pStyle w:val="Standard"/></w:pPr><w:r><w:t>${xml(`${question.standardCode} ${question.domain}`)}</w:t></w:r></w:p>
     <w:p><w:r><w:t>${xml(question.standard)}</w:t></w:r></w:p>
@@ -233,7 +235,7 @@ export function createHwpxBytesFromTemplate(title: string, questions: AnalyzedQu
     .replace('name="creator" content="text"', 'name="creator" content="문항맵"')
     .replace('name="lastsaveby" content="text"', 'name="lastsaveby" content="문항맵"')
     .replace('</opf:manifest>', `${imageManifest}</opf:manifest>`);
-  const preview = [title, `문항 ${questions.length}개 · 성취기준별 자동 분류`, ...questions.flatMap((question) => [`${question.number}번 문항`, unformattedText(questionPlainText(question.text)), question.standardCode, question.standard, question.questionCaptures?.length ? '[문항 전체 원문 캡처 포함]' : question.figureImage ? '[문항 그림자료 포함]' : '']), '성취기준 출처: pblsketch/worksheet-grab'].join('\n');
+  const preview = [title, `문항 ${questions.length}개 · 성취기준별 자동 분류`, ...questions.flatMap((question) => [`${questionLabel(question)} 문항`, unformattedText(questionPlainText(question.text)), question.standardCode, question.standard, question.questionCaptures?.length ? '[문항 전체 원문 캡처 포함]' : question.figureImage ? '[문항 그림자료 포함]' : '']), '성취기준 출처: pblsketch/worksheet-grab'].join('\n');
   const replacements = new Map<string, Uint8Array>([
     ['Contents/header.xml', encoder.encode(tableStyles.header)],
     ['Contents/section0.xml', encoder.encode(section)],
@@ -256,10 +258,10 @@ function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestio
   const paragraph = (text: string, charPr = '0') => `<hp:p id="${id++}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">${tableStyles.runs(text,charPr,()=>id++)}</hp:p>`;
   const parts = [first, paragraph(title, '5'), paragraph(`문항 ${questions.length}개 · 성취기준별 자동 분류`, '6'), paragraph('')];
   for (const [index, question] of questions.entries()) {
-    parts.push(paragraph(`${question.number}번 문항`, '6'));
-    if (question.sourceFileName) parts.push(paragraph(`원본: ${question.sourceFileName} · ${question.number}번`, '2'));
+    parts.push(paragraph(`${questionLabel(question)} 문항`, '6'));
+    if (question.sourceFileName) parts.push(paragraph(`원본: ${question.sourceFileName} · ${questionLabel(question)}`, '2'));
     try { parts.push(hwpxQuestionContent(question.text, { paragraph, nextId: () => id++, ...tableStyles })); }
-    catch (error) { throw new Error(`${question.number}번 문항: ${error instanceof Error ? error.message : 'HWPX 수식 변환에 실패했습니다.'}`); }
+    catch (error) { throw new Error(`${questionLabel(question)} 문항: ${error instanceof Error ? error.message : 'HWPX 수식 변환에 실패했습니다.'}`); }
     parts.push(paragraph(`${question.standardCode}  ${question.domain}`, '6'));
     parts.push(paragraph(`- ${question.standard}`));
     for (const image of images.get(index) ?? []) {

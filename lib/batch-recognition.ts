@@ -1,4 +1,5 @@
 import type { AnalyzedQuestion } from './pdf-analysis';
+import { questionLabel } from './question-context';
 
 export type BatchRecognitionProgress = {
   total: number;
@@ -21,7 +22,7 @@ export async function recognizeQuestionBatch(
 ) {
   if (!questions.length || questions.length > 200) throw new Error('전체 API 판독은 1~200문항씩 실행할 수 있습니다.');
   const missing = questions.filter(question => !question.questionCaptures?.length);
-  if (missing.length) throw new Error(`${missing.map(question => question.number).join(', ')}번의 문항 캡처가 없습니다. 범위를 지정한 후 전체 판독을 실행하세요.`);
+  if (missing.length) throw new Error(`${missing.map(questionLabel).join(', ')}의 문항 캡처가 없습니다. 범위를 지정한 후 전체 판독을 실행하세요.`);
   const updates: Array<{ source: AnalyzedQuestion; question: AnalyzedQuestion }> = [];
   const warnings: string[] = [], failures: string[] = [];
   let completed = 0, attempted = 0, stopped = false;
@@ -39,7 +40,7 @@ export async function recognizeQuestionBatch(
       warnings.push(...result.warnings);
       completed++;
     } catch (reason) {
-      failures.push(`${source.number}번: ${reason instanceof Error ? reason.message : 'API 판독 실패'}`);
+      failures.push(`${questionLabel(source)}: ${reason instanceof Error ? reason.message : 'API 판독 실패'}`);
       // Authentication, budget, network, or malformed response may affect the
       // remaining exam too. Do not automatically repeat a failing paid call.
       break;

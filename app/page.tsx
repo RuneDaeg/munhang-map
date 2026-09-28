@@ -3,6 +3,7 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { splitFormattedText } from '@/lib/text-formatting';
 import { validateExamQuestions } from '@/lib/question-validation';
+import { questionLabel } from '@/lib/question-context';
 import {
   ArrowRight,
   Check,
@@ -281,7 +282,7 @@ export default function Home() {
       applyVisionStatus(connection);
       if (!connection.available) throw new Error(connection.desktop || connection.local ? '먼저 API 연결을 설정해 주세요. 기본 분석과 성취기준 추천은 API 없이 사용할 수 있습니다.' : '로컬 .env.local에 OPENAI_API_KEY를 설정한 뒤 개발 서버를 다시 시작해 주세요.');
       const message = [
-        `${question.number}번 문항의 캡처 이미지와 추출문을 ${connection.providerLabel || '연결된 AI 공급자'}에 전송하여 판독할까요?`,
+        `${questionLabel(question)} 문항의 캡처 이미지와 추출문을 ${connection.providerLabel || '연결된 AI 공급자'}에 전송하여 판독할까요?`,
         '해당 문항에 연결된 공통 지문도 포함될 수 있습니다. API 요금이 발생할 수 있으며 판독 결과로 현재 내용을 갱신합니다.',
         '미공개 시험지·개인정보 등 외부 반출 금지 자료라면 취소하세요. API 키를 로컬에 저장해도 판독 자료는 선택한 공급자 또는 설정한 서버로 전송됩니다.',
         ...(question.textEdited ? ['직접 편집한 내용이 있습니다. 계속하기 전에 검토 파일 저장을 권장합니다.'] : []),
@@ -311,7 +312,7 @@ export default function Home() {
     const snapshot = [...questionData];
     try {
       const missing = snapshot.filter(question => !question.questionCaptures?.length);
-      if (missing.length) throw new Error(`${missing.map(question => question.number).join(', ')}번의 문항 캡처가 없습니다. 먼저 캡처 범위를 지정하세요.`);
+      if (missing.length) throw new Error(`${missing.map(questionLabel).join(', ')}의 문항 캡처가 없습니다. 먼저 캡처 범위를 지정하세요.`);
       if (snapshot.length > 200) throw new Error('전체 API 판독은 200문항 이하로 나누어 실행하세요.');
       const connection = await getVisionStatus();
       applyVisionStatus(connection);
@@ -353,12 +354,13 @@ export default function Home() {
     const firstText = left.trim();
     let secondText = right.trim();
     const marker = secondText.match(/^(\d{1,2})\s*[.)]\s*/);
-    const secondNumber = marker ? Number(marker[1]) : question.number + 1;
+    const secondSourceNumber = marker ? Number(marker[1]) : (question.sourceQuestionNumber ?? question.number) + 1;
+    const secondNumber = question.sourceQuestionNumber === undefined ? secondSourceNumber : Math.max(...questionData.map(item => item.number)) + 1;
     // Keep the own-question anchor after a manual split of a shared passage.
-    if (!marker) secondText = `${secondNumber}. ${secondText}`;
+    if (!marker) secondText = `${secondSourceNumber}. ${secondText}`;
     const captureWarning = '텍스트를 수동으로 나눴습니다. 캡처에는 분리 전 영역이 보존되어 있으므로 범위를 확인해 주세요.';
     const first = classifyQuestion({ ...question, text: firstText, captureWarning, captureReviewed: false, textEdited:true, visualChoices:undefined, analysisWarning:undefined, figureImage: undefined, visionEnhanced: false }, standards);
-    const second = classifyQuestion({ ...question, number: secondNumber, text: secondText, captureWarning, captureReviewed: false, textEdited:true, visualChoices:undefined, analysisWarning:undefined, figureImage: undefined, visionEnhanced: false, type: question.type.replace('자동 추출', '수동 분리') }, standards);
+    const second = classifyQuestion({ ...question, number: secondNumber, sourceQuestionNumber: question.sourceQuestionNumber === undefined ? undefined : secondSourceNumber, text: secondText, captureWarning, captureReviewed: false, textEdited:true, visualChoices:undefined, analysisWarning:undefined, figureImage: undefined, visionEnhanced: false, type: question.type.replace('자동 추출', '수동 분리') }, standards);
     setQuestionData((current) => [...current.slice(0, selected), first, second, ...current.slice(selected + 1)]);
     setSelected(selected + 1);
   }
@@ -495,7 +497,7 @@ export default function Home() {
                 {visionError && <p role="alert" className="mt-2 max-w-2xl rounded-lg bg-red-50 px-3 py-2 text-sm font-medium leading-6 text-red-700">{visionError}</p>}
                 {(batchRunning || batchMessage) && <div className="mt-2 max-w-2xl rounded-lg border bg-muted/40 p-3">
                   <output aria-live="polite" className="block text-sm font-medium">{batchRunning
-                    ? batchProgress ? `전체 API 판독 · 응답 완료 ${batchProgress.completed}/${batchProgress.total}문항${batchProgress.current !== null ? ` · ${batchProgress.current}번 요청 중` : ''}${batchStopping ? ' · 현재 문항 후 중단 대기' : ''}` : '전체 API 판독 준비 중'
+                    ? batchProgress ? `전체 API 판독 · 응답 완료 ${batchProgress.completed}/${batchProgress.total}문항${batchProgress.current !== null ? ` · ${questionLabel(questionData.find(item => item.number === batchProgress.current) ?? { number: batchProgress.current })} 요청 중` : ''}${batchStopping ? ' · 현재 문항 후 중단 대기' : ''}` : '전체 API 판독 준비 중'
                     : batchMessage}</output>
                   {batchRunning && batchProgress && <Button size="sm" variant="outline" className="mt-2" disabled={batchStopping} onClick={() => { batchStopRef.current = true; setBatchStopping(true); }}>현재 문항 후 중단</Button>}
                 </div>}
@@ -541,11 +543,11 @@ export default function Home() {
                         </Empty>
                       )}
                       {checkedQuestions.map((question, index) => (
-                        <article key={`${question.number}-${index}`} onClick={() => setSelected(index)} aria-label={`${question.number}번 추출 문항`} className={`group grid w-full grid-cols-[48px_minmax(0,1fr)] gap-3 p-4 text-left transition sm:grid-cols-[54px_minmax(0,1fr)_auto] ${selected === index ? 'bg-selected' : 'hover:bg-muted/50'}`}>
-                          <button type="button" onClick={() => setSelected(index)} aria-label={`${question.number}번 문항 정보 보기`} aria-pressed={selected === index} className={`grid size-11 place-items-center rounded-2xl text-lg font-extrabold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${selected === index ? 'bg-primary text-white' : 'bg-muted text-foreground'}`}>{String(question.number).padStart(2, '0')}</button>
+                        <article key={`${question.number}-${index}`} onClick={() => setSelected(index)} aria-label={`${questionLabel(question)} 추출 문항`} className={`group grid w-full grid-cols-[48px_minmax(0,1fr)] gap-3 p-4 text-left transition sm:grid-cols-[54px_minmax(0,1fr)_auto] ${selected === index ? 'bg-selected' : 'hover:bg-muted/50'}`}>
+                          <button type="button" onClick={() => setSelected(index)} aria-label={`${questionLabel(question)} 문항 정보 보기`} aria-pressed={selected === index} className={`grid size-11 place-items-center rounded-2xl text-lg font-extrabold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${selected === index ? 'bg-primary text-white' : 'bg-muted text-foreground'}`}>{String(question.sourceQuestionNumber ?? question.number).padStart(2, '0')}</button>
                           <div className="min-w-0">
-                            <span className="flex flex-wrap items-center gap-2"><span className="text-xs font-medium text-muted-foreground">{question.type}</span><Badge variant="outline" className="h-5 border-primary/15 bg-primary/5 text-primary">{question.domain}</Badge>{countUnresolvedGlyphs(question.text) ? <Badge variant="secondary" className="h-5 bg-amber-100 text-amber-900">문자 복원 확인 필요</Badge> : question.visionEnhanced && <Badge variant="secondary" className="h-5 bg-emerald-50 text-emerald-700">수식·그림 인식</Badge>}</span>
-                            <div className="mt-2 min-w-0 overflow-x-auto text-[15px] font-medium leading-6 focus-visible:outline-2 focus-visible:outline-ring" data-question-preview role="group" aria-label={`${question.number}번 문항 내용`} tabIndex={0}><Suspense fallback={normalizeQuestionText(question.text)}><MathText text={question.text} compact /></Suspense></div>
+                            <span className="flex flex-wrap items-center gap-2"><span className="text-xs font-medium text-muted-foreground">{question.type}{question.sectionLabel ? ` · ${question.sectionLabel}` : ''}</span><Badge variant="outline" className="h-5 border-primary/15 bg-primary/5 text-primary">{question.domain}</Badge>{countUnresolvedGlyphs(question.text) ? <Badge variant="secondary" className="h-5 bg-amber-100 text-amber-900">문자 복원 확인 필요</Badge> : question.visionEnhanced && <Badge variant="secondary" className="h-5 bg-emerald-50 text-emerald-700">수식·그림 인식</Badge>}</span>
+                            <div className="mt-2 min-w-0 overflow-x-auto text-[15px] font-medium leading-6 focus-visible:outline-2 focus-visible:outline-ring" data-question-preview role="group" aria-label={`${questionLabel(question)} 문항 내용`} tabIndex={0}><Suspense fallback={normalizeQuestionText(question.text)}><MathText text={question.text} compact /></Suspense></div>
                           </div>
                           <span className="col-start-2 flex items-center gap-2 self-center sm:col-start-auto">
                             <span className={`size-2 rounded-full ${question.validationFlags?.length ? 'bg-amber-400' : 'bg-emerald-500'}`} />
@@ -569,7 +571,7 @@ export default function Home() {
                       <div className="flex items-start justify-between gap-3"><Badge className="bg-primary/10 text-primary">{question.standardCode || '해당 없음'}</Badge><span className="text-xs font-semibold text-muted-foreground">검토용 추천</span></div>
                       <h2 className="mt-4 font-bold">{question.domain}</h2>
                       <p className="mt-2 text-sm leading-6 text-muted-foreground">{question.standard}</p>
-                      <p className="mt-4 text-xs font-semibold text-primary">연결 문항 {question.number}번</p>
+                      <p className="mt-4 text-xs font-semibold text-primary">연결 문항 {questionLabel(question)}</p>
                     </article>
                   ))}
                 </div>
@@ -627,15 +629,15 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canRecogn
     });
   }
   return (
-    <aside className="question-inspector overflow-hidden rounded-2xl border bg-background" aria-label={`${question.number}번 문항 정보`}>
+    <aside className="question-inspector overflow-hidden rounded-2xl border bg-background" aria-label={`${questionLabel(question)} 문항 정보`}>
       <div className="inspector-head shrink-0 p-5 text-white">
-        <div className="flex items-center justify-between"><p className="text-sm font-semibold text-white/80">{question.number}번 문항 정보</p><Badge className="bg-white/12 text-white">후보 {standardCandidates.length}개</Badge></div>
+        <div className="flex items-center justify-between"><p className="text-sm font-semibold text-white/80">{questionLabel(question)} 문항 정보</p><Badge className="bg-white/12 text-white">후보 {standardCandidates.length}개</Badge></div>
         <p className="mt-5 font-mono text-2xl font-bold tracking-tight text-accent">{question.standardCode}</p>
         <p className="mt-2 text-lg font-bold">{question.domain}</p>
       </div>
       {/* The scrollable region needs a tab stop for keyboard-only scrolling. */}
       {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
-      <section className="question-inspector-body p-5" tabIndex={0} aria-label={`${question.number}번 문항 상세 내용 · 스크롤 가능`}>
+      <section className="question-inspector-body p-5" tabIndex={0} aria-label={`${questionLabel(question)} 문항 상세 내용 · 스크롤 가능`}>
         {question.examSubject && <p className="mb-3 rounded-lg bg-primary/5 px-3 py-2 text-sm text-primary">{question.examSubject.page}쪽 머리말에서 ‘{question.examSubject.label}’ 감지 · {question.selectedSubjectKey ? '직접 선택한 교과를 우선 반영' : '관련 교과 안에서 성취기준 추천'}</p>}
         {question.captureWarning && <output className="mb-3 block rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{question.captureWarning}</output>}
         {question.analysisWarning && <output className="mb-3 block rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{question.analysisWarning}</output>}
@@ -646,7 +648,7 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canRecogn
         {question.questionCaptures?.map((capture, index) => (
           <figure key={`${capture.page}-${index}`} className="mb-4 overflow-hidden rounded-xl border">
             <figcaption className="bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">문항 전체 원문 캡처 · {capture.page}쪽{question.questionCaptures!.length > 1 ? ` · ${index + 1}/${question.questionCaptures!.length}` : ''} · 문서에 첨부됨</figcaption>
-            <img src={capture.image} alt={`${question.number}번 문항의 발문, 그림자료, 선택지를 포함한 원문 캡처 ${index + 1}`} className="h-auto w-full bg-white object-contain" />
+            <img src={capture.image} alt={`${questionLabel(question)} 문항의 발문, 그림자료, 선택지를 포함한 원문 캡처 ${index + 1}`} className="h-auto w-full bg-white object-contain" />
           </figure>
         ))}
         <div className="mb-5 rounded-xl border bg-muted/35 p-3">
@@ -690,13 +692,13 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canRecogn
         {!question.questionCaptures?.length && question.figureImage && (
           <figure className="mt-4 overflow-hidden rounded-xl border">
             <figcaption className="bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">자동 감지한 문항 그림자료 · 문서에 첨부됨</figcaption>
-            <img src={question.figureImage} alt={`${question.number}번 문항의 자동 감지 그림자료`} className="h-auto w-full bg-white object-contain" />
+            <img src={question.figureImage} alt={`${questionLabel(question)} 문항의 자동 감지 그림자료`} className="h-auto w-full bg-white object-contain" />
           </figure>
         )}
         {question.sourcePageImage && (
           <details className="mt-3 overflow-hidden rounded-xl border">
             <summary className="cursor-pointer bg-muted/50 px-3 py-2 text-xs font-semibold text-muted-foreground">원문 페이지 펼쳐서 인식 결과 확인</summary>
-            <img src={question.sourcePageImage} alt={`${question.number}번 문항이 포함된 PDF 원문 페이지`} className="h-auto w-full bg-white object-contain" />
+            <img src={question.sourcePageImage} alt={`${questionLabel(question)} 문항이 포함된 PDF 원문 페이지`} className="h-auto w-full bg-white object-contain" />
           </details>
         )}
         <div className="my-5 h-px bg-border" />

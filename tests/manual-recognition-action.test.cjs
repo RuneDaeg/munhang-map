@@ -5,6 +5,8 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 const ts = require('typescript');
+require('./load-typescript.cjs');
+const { questionLabel } = require('../lib/question-context.ts');
 
 // Exercise the production handler without mounting React or making API calls.
 // This is trusted checkout code, not a sandbox for untrusted source. AST guards
@@ -31,6 +33,7 @@ function setup() {
   const other = { number: 18, text: 'other question', questionCaptures: [{ image: 'other capture' }] };
   const calls = { status: 0, confirmation: [], recognition: [], errors: [], events: [] };
   const state = {
+    questionLabel,
     questionData: [question, other], selected: 0, current: [question, other],
     operationRef: { current: false }, recognizingQuestion: null, savingBank: false, status: 'ready',
     standards: [{ code: '[local-catalog]' }],

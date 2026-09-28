@@ -8,6 +8,8 @@ type Context = Pick<
   | 'mappingArea'
   | 'mappingReason'
   | 'validationFlags'
+  | 'sourceQuestionNumber'
+  | 'sectionLabel'
 >;
 /** Untrusted review JSON: explicit fields only; never spread imported objects. */
 export function readQuestionContext(
@@ -15,6 +17,10 @@ export function readQuestionContext(
   maxPages = 200,
 ): Context {
   const result: Context = {};
+  if (Number.isInteger(value.sourceQuestionNumber) && Number(value.sourceQuestionNumber) >= 1 && Number(value.sourceQuestionNumber) <= 200)
+    result.sourceQuestionNumber = Number(value.sourceQuestionNumber);
+  if (typeof value.sectionLabel === 'string' && value.sectionLabel.trim())
+    result.sectionLabel = value.sectionLabel.replace(/[\r\n\t]/g, ' ').trim().slice(0, 100);
   if (
     typeof value.assessmentText === 'string' &&
     value.assessmentText.length <= 200000
@@ -53,4 +59,9 @@ export function readQuestionContext(
           : [],
       );
   return result;
+}
+
+/** User-facing identity, distinct from the unique internal/API selection id. */
+export function questionLabel(question: { number: number; sourceQuestionNumber?: number; sectionLabel?: string }): string {
+  return `${question.sectionLabel ? `${question.sectionLabel} · ` : ''}${question.sourceQuestionNumber ?? question.number}번`;
 }

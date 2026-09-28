@@ -55,7 +55,8 @@ export function validateQuestion(
     add('blank_missing', '빈칸 위치 표식을 확인해 주세요.');
   if (question.sharedPassage) {
     const [a, b] = question.sharedPassage.range;
-    if (question.number < a || question.number > b)
+    const sourceNumber = question.sourceQuestionNumber ?? question.number;
+    if (sourceNumber < a || sourceNumber > b)
       add(
         'foreign_set_marker',
         '공통 지문 범위가 이 문항 번호와 맞지 않습니다.',

@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/compone
 import { ExportDialog } from '@/components/export-dialog';
 import { listBankItems, loadBankItem, loadBankSelection, updateBankItem, type BankEntry, type BankItem } from '@/lib/question-bank';
 import type { AnalyzedQuestion } from '@/lib/pdf-analysis';
+import { questionLabel } from '@/lib/question-context';
 import { questionStorageProblem } from '@/lib/question-storage-check';
 import QuestionTextEditor from './question-text-editor';
 const MathText = lazy(() => import('./math-text'));
@@ -106,15 +107,15 @@ export function QuestionBank({ onClose }: { onClose: () => void }) {
             {loading && <output className="flex items-center gap-2 p-6"><LoaderCircle className="size-4 animate-spin" />문제함을 불러오는 중…</output>}
             {!loading && !visible.length && <p className="rounded-xl border p-6 text-sm leading-6 text-muted-foreground">{items.length ? '검색 조건에 맞는 문항이 없습니다.' : '저장한 문항이 없습니다. PDF 분석 후 ‘문제함에 저장’을 눌러 주세요.'}</p>}
             {visible.map((item) => <article key={item.id} className={`rounded-xl border p-3 ${checked.has(item.id) ? 'border-primary bg-primary/5' : ''}`}>
-              <div className="flex items-start gap-3"><Checkbox aria-label={`${item.sourceFileName} ${item.number}번 선택`} className="mt-1" disabled={working} checked={checked.has(item.id)} onCheckedChange={(value) => {
+              <div className="flex items-start gap-3"><Checkbox aria-label={`${item.sourceFileName} ${questionLabel(item)} 선택`} className="mt-1" disabled={working} checked={checked.has(item.id)} onCheckedChange={(value) => {
                 if (value && selected.length >= 200) { setError('한 번에 200문항까지 선택할 수 있습니다.'); return; }
                 setSelected((current) => value ? [...current, item.id] : current.filter((id) => id !== item.id));
-              }} /><div className="min-w-0 flex-1"><p className="break-words text-sm font-semibold">{item.sourceFileName} · {item.number}번</p><p className="mt-1 text-sm text-primary">{item.standardCode || '미분류'} · {item.domain}</p><p className="mt-2 line-clamp-2 text-sm leading-6">{item.text}</p><div className="flex flex-wrap gap-1"><Button variant="ghost" size="sm" disabled={working} onClick={() => void retrieve([item.id], false)}>원문 캡처 보기</Button><Button variant="outline" size="sm" disabled={working} onClick={() => void beginEdit(item.id)} aria-label={`${item.sourceFileName} ${item.number}번 수정`}><Pencil />문항 수정</Button></div></div></div>
+              }} /><div className="min-w-0 flex-1"><p className="break-words text-sm font-semibold">{item.sourceFileName} · {questionLabel(item)}</p><p className="mt-1 text-sm text-primary">{item.standardCode || '미분류'} · {item.domain}</p><p className="mt-2 line-clamp-2 text-sm leading-6">{item.text}</p><div className="flex flex-wrap gap-1"><Button variant="ghost" size="sm" disabled={working} onClick={() => void retrieve([item.id], false)}>원문 캡처 보기</Button><Button variant="outline" size="sm" disabled={working} onClick={() => void beginEdit(item.id)} aria-label={`${item.sourceFileName} ${questionLabel(item)} 수정`}><Pencil />문항 수정</Button></div></div></div>
             </article>)}
           </div>
           <aside className="min-w-0 rounded-xl border bg-muted/30 p-3">
             {editing && <section className="mb-4 space-y-3" aria-label="문제함 문항 편집">
-              <h3 className="break-words font-semibold">{editing.question.sourceFileName} · {editing.question.number}번 수정</h3>
+              <h3 className="break-words font-semibold">{editing.question.sourceFileName} · {questionLabel(editing.question)} 수정</h3>
               <p className="text-sm leading-6 text-muted-foreground">수식은 $…$ 안에서 수정하세요. 자료 상자·표 표시와 굵게·밑줄도 편집할 수 있습니다. 저장은 이 문항에만 적용됩니다.</p>
               <QuestionTextEditor value={draft} disabled={working} onCursor={() => {}} onChange={text => { setDraft(text); setNotice(''); setEditError(''); }} />
               {editError && <p role="alert" className="whitespace-pre-wrap break-words text-sm text-destructive">{editError}</p>}
@@ -126,7 +127,7 @@ export function QuestionBank({ onClose }: { onClose: () => void }) {
               </div>
               <div className="min-w-0 rounded-lg border bg-background p-3"><h4 className="mb-2 text-sm font-semibold">수정 미리보기</h4><Suspense fallback={<p className="text-sm text-muted-foreground">미리보기 준비 중…</p>}><MathText text={previewDraft} /></Suspense></div>
             </section>}
-            {preview ? <><p className="mb-3 break-words text-sm font-semibold">{preview.sourceFileName} · {preview.number}번</p>{preview.questionCaptures?.map((capture, index) => <figure key={index} className="mb-3"><figcaption className="mb-1 text-sm text-muted-foreground">원본 {capture.page}쪽</figcaption>{/* Local, confidential captures must not be sent to an image optimizer. */}{/* oxlint-disable-next-line next/no-img-element */}<img src={capture.image} alt={`${preview.number}번 문항 원문 캡처 ${index + 1}`} className="h-auto w-full rounded border bg-white" /></figure>)}</> : <p className="text-sm leading-6 text-muted-foreground">‘원문 캡처 보기’를 누르면 저장된 발문·그림·선택지를 확인할 수 있습니다.</p>}
+            {preview ? <><p className="mb-3 break-words text-sm font-semibold">{preview.sourceFileName} · {questionLabel(preview)}</p>{preview.questionCaptures?.map((capture, index) => <figure key={index} className="mb-3"><figcaption className="mb-1 text-sm text-muted-foreground">원본 {capture.page}쪽</figcaption>{/* Local, confidential captures must not be sent to an image optimizer. */}{/* oxlint-disable-next-line next/no-img-element */}<img src={capture.image} alt={`${questionLabel(preview)} 문항 원문 캡처 ${index + 1}`} className="h-auto w-full rounded border bg-white" /></figure>)}</> : <p className="text-sm leading-6 text-muted-foreground">‘원문 캡처 보기’를 누르면 저장된 발문·그림·선택지를 확인할 수 있습니다.</p>}
           </aside>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3"><p className="text-sm text-muted-foreground">{dirty ? '수정 내용을 저장하거나 취소한 뒤 내보내세요.' : '선택한 순서로 묶습니다. 검색을 바꿔도 선택은 유지됩니다.'}</p><Button disabled={working || dirty || !selected.length} onClick={() => void retrieve(selected, true)}>{working ? <LoaderCircle className="animate-spin" /> : <Download />}선택 {selected.length}문항 내보내기</Button></div>

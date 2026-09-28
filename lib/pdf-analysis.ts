@@ -28,6 +28,9 @@ export type SubjectCandidate = {
 
 export type AnalyzedQuestion = {
   number: number;
+  /** Unique internal number stays stable; elective booklets may repeat 23–30. */
+  sourceQuestionNumber?: number;
+  sectionLabel?: string;
   type: string;
   text: string;
   standardCode: string;
@@ -149,11 +152,14 @@ export async function analyzePdf(file: File, onProgress?: (page: number, total: 
       return structureQuestionRegion(source.items,source.rules,region.box,page.width,page.height,source.rasterStructures,source.images);
     });
     warnings.push(...structuredRegions.flatMap(region=>region.warnings));
-    const structuredText = normalizeQuestionText(structuredRegions.map(region=>region.text).join('\n').replace(new RegExp(`^\\s*${chunk.number}\\s*[.)]\\s*`),'') || chunk.text);
+    const sourceNumber = chunk.sourceQuestionNumber ?? chunk.number;
+    const structuredText = normalizeQuestionText(structuredRegions.map(region=>region.text).join('\n').replace(new RegExp(`^\\s*${sourceNumber}\\s*[.)]\\s*`),'') || chunk.text);
     const assessmentText = normalizeQuestionText(structuredRegions.slice(chunk.sharedRegionCount ?? 0).map(region=>region.text).join('\n')
-      .replace(new RegExp(`^\\s*${chunk.number}\\s*[.)]\\s*`),''));
+      .replace(new RegExp(`^\\s*${sourceNumber}\\s*[.)]\\s*`),''));
     questions.push(classifyQuestion({
       number: chunk.number,
+      sourceQuestionNumber: chunk.sourceQuestionNumber,
+      sectionLabel: chunk.sectionLabel,
       type: `자동 추출 문항 · ${chunk.page}쪽`,
       text: structuredText,
       assessmentText,

@@ -13,6 +13,9 @@ type Style = { variant?: string };
 // This converter deliberately accepts a bounded subset. Unknown structures,
 // fonts and symbols throw; they must never become successful literal LaTeX.
 const SYMBOLS: Record<string, string> = {
+  // KaTeX uses U+2223 for an ordinary | in sets, probability and absolute
+  // values too, not only for a fence. Preserve the same native vertical bar.
+  '∣': '|',
   '−': '-', '×': 'TIMES', '÷': 'DIVIDE', '±': '+-', '∓': '-+', '⋅': 'CDOT', '·': 'CDOT',
   '≤': 'LEQ', '≥': 'GEQ', '≠': '!=', '≈': 'APPROX', '≃': 'SIMEQ', '≅': 'CONG', '≡': 'IDENTICAL',
   '∼': 'SIM', '≪': '<<', '≫': '>>', '∝': 'PROPTO', '∞': 'INF', '∂': 'PARTIAL', '∇': 'NABLA',

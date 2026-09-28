@@ -3,7 +3,7 @@ import { normalizeQuestionText } from './math-normalization';
 import { readQuestionContext } from './question-context';
 import { assertQuestionsStorable } from './question-storage-check';
 
-export type BankItem = { id: string; sourceFileName: string; savedAt: string; number: number; standardCode: string; domain: string; text: string; confidence: number };
+export type BankItem = { id: string; sourceFileName: string; savedAt: string; number: number; sourceQuestionNumber?: number; sectionLabel?: string; standardCode: string; domain: string; text: string; confidence: number };
 export type BankEntry = { id: string; revision: string; savedAt?: string; question: AnalyzedQuestion };
 
 async function bankRequest<T>(path = '', body?: unknown): Promise<T> {
