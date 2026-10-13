@@ -10,14 +10,60 @@ type Context = Pick<
   | 'validationFlags'
   | 'sourceQuestionNumber'
   | 'sectionLabel'
+  | 'answer'
+  | 'answerSource'
+  | 'sourceFormat'
+  | 'sourceFingerprint'
+  | 'sourceImages'
+  | 'sourceItemId'
+  | 'explanation'
+  | 'explanationImages'
 >;
+
+export function hasHwpxIdentity(value: { sourceFormat?: unknown; sourceFingerprint?: unknown }): boolean {
+  return value.sourceFormat === 'hwpx' && typeof value.sourceFingerprint === 'string' && /^[a-f0-9]{64}$/.test(value.sourceFingerprint);
+}
+
+export function sourceBasename(value: string): string {
+  return (value.split(/[\\/]/).pop() || '').replace(/[\p{Cc}\p{Cf}:*?"<>|]/gu, '_').replace(/^[. ]+|[. ]+$/g, '').slice(0, 500);
+}
+
+/** Reject remote/SVG images and bound memory before copying untrusted metadata. */
+export function readSourceImages(value: unknown): NonNullable<AnalyzedQuestion['sourceImages']> {
+  if (!Array.isArray(value) || value.length > 40) throw new Error('HWPX 삽입 그림 목록이 올바르지 않습니다.');
+  let total = 0;
+  const seen = new Set<string>();
+  return value.map((item) => {
+    if (!item || typeof item.id !== 'string' || !/^[A-Za-z0-9_.-]{1,100}$/.test(item.id) || item.id === '.' || item.id === '..' || seen.has(item.id)
+      || typeof item.image !== 'string' || item.image.length > 15_000_000 || !/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/.test(item.image)
+      || item.image.slice(item.image.indexOf(',') + 1).length % 4) throw new Error('HWPX 삽입 그림 정보가 올바르지 않습니다.');
+    total += item.image.length;
+    if (total > 40_000_000) throw new Error('HWPX 삽입 그림은 문항당 40MB 이하로 저장해 주세요.');
+    seen.add(item.id);
+    return { id: item.id, image: item.image, ...(typeof item.label === 'string' ? { label: item.label.slice(0, 200) } : {}) };
+  });
+}
 /** Untrusted review JSON: explicit fields only; never spread imported objects. */
 export function readQuestionContext(
   value: Record<string, unknown>,
   maxPages = 200,
 ): Context {
   const result: Context = {};
-  if (Number.isInteger(value.sourceQuestionNumber) && Number(value.sourceQuestionNumber) >= 1 && Number(value.sourceQuestionNumber) <= 200)
+  if (typeof value.answer === 'string') result.answer = value.answer.slice(0, 500);
+  if (typeof value.answerSource === 'string' && sourceBasename(value.answerSource)) result.answerSource = sourceBasename(value.answerSource);
+  if (typeof value.sourceItemId === 'string' && value.sourceItemId.trim() && value.sourceItemId.length <= 200) result.sourceItemId = value.sourceItemId.replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim();
+  if (value.explanation !== undefined) {
+    if (typeof value.explanation !== 'string' || value.explanation.length > 200000) throw new Error('해설은 20만 자 이하의 텍스트로 저장해 주세요.');
+    result.explanation = value.explanation;
+  }
+  if (value.sourceFormat === 'pdf') result.sourceFormat = 'pdf';
+  if (hasHwpxIdentity(value)) {
+    result.sourceFormat = 'hwpx';
+    result.sourceFingerprint = value.sourceFingerprint as string;
+    if (value.sourceImages !== undefined) result.sourceImages = readSourceImages(value.sourceImages);
+    if (value.explanationImages !== undefined) result.explanationImages = readSourceImages(value.explanationImages);
+  }
+  if (Number.isInteger(value.sourceQuestionNumber) && Number(value.sourceQuestionNumber) >= 1 && Number(value.sourceQuestionNumber) <= 10000)
     result.sourceQuestionNumber = Number(value.sourceQuestionNumber);
   if (typeof value.sectionLabel === 'string' && value.sectionLabel.trim())
     result.sectionLabel = value.sectionLabel.replace(/[\r\n\t]/g, ' ').trim().slice(0, 100);

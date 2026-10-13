@@ -69,7 +69,7 @@ jobs:
 
           # 키·개인 자료가 섞이지 않았는지 확인합니다.
           import re
-          forbidden = re.compile(r'(^|/)\.env|api-key\.enc|local-master-key\.bin|(^|/)settings\.json$|(^|/)question-bank/|\.pdf$|_검토\.json$', re.IGNORECASE)
+          forbidden = re.compile(r'(^|/)\.env|api-key\.enc|local-master-key\.bin|(^|/)settings\.json$|(^|/)question-bank/|\.(?:pdf|hwp|hwpx|docx)$|_검토\.json$', re.IGNORECASE)
           leaked = [name for name in names if forbidden.search(name)]
           if leaked:
               sys.exit('배포본에 포함되면 안 되는 파일: ' + ', '.join(leaked))

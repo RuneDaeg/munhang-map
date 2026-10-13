@@ -33,7 +33,8 @@ export function SupportReport({ version, fileName, questions, sourcePages, busy 
   function changeOpen(next: boolean) {
     setOpen(next); setConsented(null); setPrepared(false); setMessage(''); setError('');
   }
-  const available = sourcePages.length > 0 && questions.length > 0 && !busy;
+  const hwpx = questions.length > 0 && questions.every(question => question.sourceFormat === 'hwpx' && /^[a-f0-9]{64}$/.test(question.sourceFingerprint ?? ''));
+  const available = (sourcePages.length > 0 || hwpx) && questions.length > 0 && !busy;
   const enabled = available && consent;
 
   function prepare(kind: 'json' | 'eml') {
@@ -59,10 +60,10 @@ export function SupportReport({ version, fileName, questions, sourcePages, busy 
         <DialogTitle>제작자에게 인식 오류 제보</DialogTitle>
         <DialogDescription>받는 주소: <span className="select-all font-semibold">{SUPPORT_EMAIL}</span><br />검토 JSON을 첨부해 원문과 추출 결과를 함께 확인할 수 있습니다. 자동 발송 기능은 아닙니다.</DialogDescription>
         <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm leading-6 text-amber-950">
-          <p className="font-semibold">검토 JSON에는 원본 PDF의 모든 페이지 이미지와 현재 문항·성취기준·수정 내용이 포함됩니다.</p>
+          <p className="font-semibold">검토 JSON에는 원본 PDF의 모든 페이지 이미지 또는 HWPX 삽입 그림과 현재 문항·정답·해설·성취기준·수정 내용이 포함됩니다.</p>
           <p>API 키와 연결 설정은 포함하지 않습니다. 미공개 시험지·개인정보·외부 반출 금지 자료는 보내지 마세요. 메일을 보내면 제작자와 이용하는 메일 서비스에 자료가 전달됩니다.</p>
         </div>
-        <p className="break-all text-sm">{available ? `현재 파일: ${fileName} · ${questions.length}문항 · ${sourcePages.length}쪽 · v${version}` : busy ? '분석·판독이 끝난 뒤 제보 파일을 준비할 수 있습니다.' : '먼저 PDF를 분석하거나 검토 JSON 파일을 열어 주세요. 예시 문항은 제보 파일에 포함하지 않습니다.'}</p>
+        <p className="break-all text-sm">{available ? `현재 파일: ${fileName} · ${questions.length}문항 · ${hwpx ? 'HWPX 구조 추출' : `${sourcePages.length}쪽`} · v${version}` : busy ? '분석·판독이 끝난 뒤 제보 파일을 준비할 수 있습니다.' : '먼저 PDF/HWPX를 분석하거나 검토 JSON 파일을 열어 주세요. 예시 문항은 제보 파일에 포함하지 않습니다.'}</p>
         <label className="grid gap-2 text-sm font-medium">문제 문항 번호와 오류 설명 (선택)
           <textarea value={details} maxLength={4000} onChange={event => setDetails(event.target.value)} rows={3} placeholder="예: 13번 사료 상자의 테두리가 빠집니다." className="w-full rounded-lg border bg-background p-3 font-normal" />
         </label>

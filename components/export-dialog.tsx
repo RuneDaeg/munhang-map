@@ -3,27 +3,30 @@
 import { useState } from 'react';
 import { Download, LoaderCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
-import { captureExportSummary, downloadCaptureArchive, downloadDocx, downloadHwpx, downloadStandardArchive, groupQuestionsByStandard } from '@/lib/document-export';
+import { captureExportSummary, downloadAnswerCsv, downloadCaptureArchive, downloadDocx, downloadHwpx, downloadStandardArchive, groupQuestionsByStandard } from '@/lib/document-export';
 import type { AnalyzedQuestion } from '@/lib/pdf-analysis';
 
 export function ExportDialog({ fileName, questions, onClose }: { fileName: string; questions: AnalyzedQuestion[]; onClose: () => void }) {
   const [grouped, setGrouped] = useState(true);
   const [capturesGrouped, setCapturesGrouped] = useState(true);
+  const [includeAnswers, setIncludeAnswers] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [progress, setProgress] = useState('');
   const [error, setError] = useState('');
   const captures = captureExportSummary(questions, fileName);
-  async function save(format: 'docx' | 'hwpx' | 'images') {
+  async function save(format: 'docx' | 'hwpx' | 'images' | 'answers') {
     if (exporting) return;
     setExporting(true); setError(''); setProgress(format === 'images' ? '캡처 이미지 준비 중…' : '문서 준비 중…');
     try {
       await new Promise((resolve) => setTimeout(resolve, 0));
-      if (format === 'images') await downloadCaptureArchive(fileName, questions, (completed, total) => setProgress(`캡처 이미지 묶는 중 · ${completed}/${total}장`), { groupByStandard: capturesGrouped });
-      else if (grouped) await downloadStandardArchive(fileName, questions, format, (completed, total) => setProgress(`성취기준별 문서 생성 · ${completed}/${total}개`));
-      else if (format === 'docx') downloadDocx(fileName, questions);
-      else await downloadHwpx(fileName, questions);
+      if (format === 'answers') downloadAnswerCsv(fileName, questions);
+      else if (format === 'images') await downloadCaptureArchive(fileName, questions, (completed, total) => setProgress(`캡처 이미지 묶는 중 · ${completed}/${total}장`), { groupByStandard: capturesGrouped, includeAnswers });
+      else if (grouped) await downloadStandardArchive(fileName, questions, format, (completed, total) => setProgress(`성취기준별 문서 생성 · ${completed}/${total}개`), { includeAnswers });
+      else if (format === 'docx') downloadDocx(fileName, questions, { includeAnswers });
+      else await downloadHwpx(fileName, questions, { includeAnswers });
       onClose();
     } catch (reason) { setError(reason instanceof Error ? reason.message : '내보내기 파일을 만들지 못했습니다.'); }
     finally { setExporting(false); }
@@ -32,6 +35,9 @@ export function ExportDialog({ fileName, questions, onClose }: { fileName: strin
     <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg" showCloseButton={!exporting}>
       <DialogTitle>문항 내보내기</DialogTitle>
       <DialogDescription>총 {questions.length}문항 · 성취기준 {groupQuestionsByStandard(questions).length}개. 캡처 이미지만 받거나, 수정한 텍스트·성취기준·캡처가 포함된 문서를 받으세요.</DialogDescription>
+      <label htmlFor="export-include-answers" className="flex items-center gap-2 text-sm font-semibold"><Checkbox id="export-include-answers" checked={includeAnswers} disabled={exporting} onCheckedChange={value => setIncludeAnswers(value === true)} />정답 포함 (교사용)</label>
+      <p className="text-sm leading-6 text-muted-foreground">기본 문서에는 정답이 없습니다. 선택하면 DOCX/HWPX와 ZIP의 문항목록에 정답을 담습니다. 원본 캡처 그림 자체에 인쇄된 정답은 지워지지 않습니다.</p>
+      <Button variant="outline" disabled={exporting || !questions.some(question => question.answer)} onClick={() => void save('answers')}><Download />정답 목록만 받기 · CSV (교사용)</Button>
       <section aria-labelledby="capture-export-heading" className="space-y-3 rounded-xl border bg-muted/40 p-4">
         <h3 id="capture-export-heading" className="font-semibold">캡처 이미지만 받기 · {captures.imageCount}장</h3>
         <p className="text-sm leading-6 text-muted-foreground">문항 전체 캡처를 원본 화질 그대로 ZIP에 담습니다. 파일명에 PDF 이름·문항 번호·쪽수가 들어가며, 여러 장인 문항은 순서대로 모두 저장합니다. 이미지에 글자를 덧붙이거나 API를 다시 호출하지 않습니다.</p>
@@ -50,7 +56,7 @@ export function ExportDialog({ fileName, questions, onClose }: { fileName: strin
         <NativeSelectOption value="standard">성취기준마다 파일 분리 · ZIP으로 받기</NativeSelectOption>
         <NativeSelectOption value="single">모든 문항을 문서 하나로 받기</NativeSelectOption>
       </NativeSelect>
-      <p className="text-sm leading-6 text-muted-foreground">ZIP에는 성취기준별 문서와 원본 PDF·문항 번호를 정리한 목록이 들어갑니다. 미분류 문항은 별도 파일로 보존됩니다.</p>
+      <p className="text-sm leading-6 text-muted-foreground">ZIP에는 성취기준별 문서와 원본 파일·문항 번호를 정리한 목록이 들어갑니다. 미분류 문항은 별도 파일로 보존됩니다. HWPX 삽입 그림은 문서에 첨부되며 원문 페이지 캡처와는 다릅니다.</p>
       <div className="grid grid-cols-2 gap-3">
         <Button disabled={exporting || !questions.length} onClick={() => void save('docx')}><Download /> Word · DOCX</Button>
         <Button variant="outline" disabled={exporting || !questions.length} onClick={() => void save('hwpx')}><Download /> 한글 · HWPX</Button>

@@ -9,8 +9,9 @@ const dependencies = { analyzePdf, classifyQuestion, loadAchievementStandards };
 // Upload analysis is local-only, regardless of saved API credentials. AI rereads
 // are a separate, explicit action on selected questions in the caller.
 export async function runExamAnalysis(file: File, onProgress: (progress: AnalysisProgress) => void, deps = dependencies) {
-  onProgress({ stage: 'pdf', completed: 0, total: 0, percent: 0, detail: 'PDF를 여는 중' });
-  const result = await deps.analyzePdf(file,
+  const hwpx = /\.hwpx$/i.test(file.name ?? '');
+  onProgress({ stage: 'pdf', completed: 0, total: 0, percent: 0, detail: hwpx ? 'HWPX 본문·표·수식 읽는 중' : 'PDF를 여는 중' });
+  const result = hwpx ? await (await import('./hwpx-analysis')).analyzeHwpx(file, await deps.loadAchievementStandards(), (completed, total) => onProgress({ stage: 'capture', completed, total, percent: completed ? 95 : 10, detail: 'HWPX 문항·정답·해설·삽입 그림 정리 중 (페이지 캡처 없음)' })) : await deps.analyzePdf(file,
     (completed, total) => onProgress({ stage: 'pdf', completed, total, percent: Math.round(completed / Math.max(total, 1) * 70), detail: `텍스트와 원문 페이지 읽기 · ${completed}/${total}쪽` }),
     (completed, total) => onProgress({ stage: 'capture', completed, total, percent: 70 + Math.round(completed / Math.max(total, 1) * 25), detail: `문항 경계 확인·전체 캡처 · ${completed}/${total}문항` }));
   if (!result.questions.length) throw new Error('문항을 찾지 못했습니다. 텍스트가 포함된 PDF인지 확인해 주세요.');

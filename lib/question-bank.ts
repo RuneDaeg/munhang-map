@@ -1,6 +1,6 @@
 import type { AnalyzedQuestion } from './pdf-analysis';
 import { normalizeQuestionText } from './math-normalization';
-import { readQuestionContext } from './question-context';
+import { hasHwpxIdentity, readQuestionContext, sourceBasename } from './question-context';
 import { assertQuestionsStorable } from './question-storage-check';
 
 export type BankItem = { id: string; sourceFileName: string; savedAt: string; number: number; sourceQuestionNumber?: number; sectionLabel?: string; standardCode: string; domain: string; text: string; confidence: number };
@@ -21,13 +21,15 @@ export async function listBankItems(): Promise<BankItem[]> {
 }
 
 export async function saveToQuestionBank(sourceFileName: string, questions: AnalyzedQuestion[], sourcePages: string[]): Promise<{ saved: number; updated: boolean }> {
-  if (!sourcePages.length || !questions.length) throw new Error('PDF 분석을 완료한 후 저장해 주세요.');
+  const hwpx = questions.length > 0 && questions.every(hasHwpxIdentity) && new Set(questions.map(question => question.sourceFingerprint)).size === 1;
+  if (!questions.length || (!sourcePages.length && !hwpx) || (hwpx && sourcePages.length)) throw new Error('PDF 또는 HWPX 분석을 완료한 후 저장해 주세요.');
+  if (questions.length > (hwpx ? 1000 : 200)) throw new Error('문제함에는 한 번에 PDF 200문항, HWPX 1,000문항까지 저장할 수 있습니다.');
   assertQuestionsStorable(questions);
-  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sourcePages.join('')));
-  const sourceFingerprint = [...new Uint8Array(bytes)].map((value) => value.toString(16).padStart(2, '0')).join('');
+  const bytes = hwpx ? undefined : await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sourcePages.join('')));
+  const sourceFingerprint = hwpx ? questions[0].sourceFingerprint : [...new Uint8Array(bytes!)].map((value) => value.toString(16).padStart(2, '0')).join('');
   // Whitelist the document content. Never send API settings or full source pages.
   const snapshots = questions.map((question) => ({ number: question.number, type: question.type, text: normalizeQuestionText(question.text), standardCode: question.standardCode, standard: question.standard, domain: question.domain, confidence: question.confidence, questionCaptures: question.questionCaptures?.map(({ page, box, image }) => ({ page, box, image })), captureWarning: question.captureWarning, captureReviewed: question.captureReviewed, visionEnhanced: question.visionEnhanced, textEdited: question.textEdited, analysisWarning: question.analysisWarning, visualChoices: question.visualChoices?.map(({label,page,box,image})=>({label,page,box,image})) }));
-  return bankRequest<{ saved: number; updated: boolean }>('', { sourceFileName, sourceFingerprint,
+  return bankRequest<{ saved: number; updated: boolean }>('', { sourceFileName: sourceBasename(sourceFileName), sourceFingerprint,
     questions: snapshots.map((snapshot,index)=>({...snapshot,...readQuestionContext(questions[index] as unknown as Record<string,unknown>)})) });
 }
 
@@ -43,9 +45,10 @@ export async function loadBankItem(id: string): Promise<BankEntry> {
   return { ...entry, question: { ...entry.question, text: normalizeQuestionText(entry.question.text) } };
 }
 
-export async function updateBankItem(entry: BankEntry, text: string): Promise<BankEntry> {
+export async function updateBankItem(entry: BankEntry, text: string, answer?: string): Promise<BankEntry> {
   assertQuestionsStorable([{ number: entry.question.number, text }]);
-  // Send only the changed text and optimistic revision, never caller-supplied
+  if (answer !== undefined && (typeof answer !== 'string' || answer.length > 500)) throw new Error('정답은 500자 이하로 입력해 주세요.');
+  // Send only editable text/answer and optimistic revision, never caller-supplied
   // images, classification, filenames or API settings.
-  return bankRequest<BankEntry>('/update', { id: entry.id, revision: entry.revision, text: normalizeQuestionText(text) });
+  return bankRequest<BankEntry>('/update', { id: entry.id, revision: entry.revision, text: normalizeQuestionText(text), ...(answer !== undefined ? { answer } : {}) });
 }

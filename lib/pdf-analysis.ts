@@ -33,6 +33,16 @@ export type AnalyzedQuestion = {
   sectionLabel?: string;
   type: string;
   text: string;
+  /** Teacher metadata; never appended to question text or recognition prompts. */
+  answer?: string;
+  answerSource?: string;
+  sourceFormat?: 'pdf' | 'hwpx';
+  sourceFingerprint?: string;
+  /** Embedded HWPX pictures, distinct from original-page question captures. */
+  sourceImages?: Array<{ id: string; image: string; label?: string }>;
+  sourceItemId?: string;
+  explanation?: string;
+  explanationImages?: Array<{ id: string; image: string; label?: string }>;
   standardCode: string;
   standard: string;
   confidence: number;

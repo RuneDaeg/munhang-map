@@ -4,7 +4,7 @@ import { Check, LoaderCircle } from 'lucide-react';
 import { Progress, ProgressLabel, ProgressValue } from '@/components/ui/progress';
 import type { AnalysisProgress as ProgressState } from '@/lib/analysis-workflow';
 
-const stages = [['pdf', 'PDF 읽기·수식 복원'], ['capture', '문항 분리·캡처'], ['classify', '성취기준 추천']] as const;
+const stages = [['pdf', '파일 읽기·수식 복원'], ['capture', '문항 구조·자료 정리'], ['classify', '성취기준 추천']] as const;
 
 export function AnalysisProgress({ progress, detail }: { progress: ProgressState | null; detail?: string }) {
   const active = stages.findIndex(([key]) => key === progress?.stage);

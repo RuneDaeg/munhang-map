@@ -284,7 +284,7 @@ export function mathQualityIssues(value: string): MathIssue[] {
   if(hasUnbalancedMathDelimiters(text))
     issues.push({code:'latex_unbalanced',message:'수식 구분자 $의 짝이 맞지 않습니다.'});
   const parts=splitMathText(text.replace(/<\/?[bu]>/g,''));
-  if(parts.some(part=>!part.math && /[\^_]\s*\{|\\(?:left|right|begin|end|frac|sqrt|sum|lim)(?![A-Za-z])/.test(part.text)))
+  if(parts.some(part=>!part.math && /[\^_]\s*\{|\\(?:left|right|begin|end|frac|sqrt|sum|lim)(?![A-Za-z])/.test(withoutPreservedNativeEquations(part.text))))
     issues.push({code:'latex_outside_math',message:'수식 일부가 수식 영역 밖에 남았습니다. 첨자·괄호와 $ 구분자를 확인해 주세요.'});
   const outsideTables=text.replace(/^:::table[^\n]*\n[\s\S]*?^:::[ \t]*$/gm,'');
   if(/(?:^|\n)[ \t]*\|[ \t]*\|[ \t]*(?:\n|$)/.test(outsideTables))
@@ -299,4 +299,27 @@ export function mathQualityIssues(value: string): MathIssue[] {
     }
   }
   return issues;
+}
+
+/** HWPX's explicit fallback is literal source text, not broken LaTeX. Only
+ * complete, bounded markers in an already non-math span are exempt from the
+ * outside-math heuristic; controls and real math still receive every check. */
+function withoutPreservedNativeEquations(value: string): string {
+  const marker = '[한글 수식: ';
+  let result = '', copied = 0;
+  for (let start = value.indexOf(marker); start >= 0; start = value.indexOf(marker, start + marker.length)) {
+    if (start < copied) continue;
+    const contentStart = start + marker.length;
+    let depth = 1, end = contentStart;
+    for (; end < Math.min(value.length, contentStart + 20001); end++) {
+      // A multiline/incomplete marker must not swallow later question text.
+      if (value[end] === '\n' || value[end] === '\r') break;
+      if (value[end] === '[') depth++;
+      if (value[end] === ']' && --depth === 0) break;
+    }
+    if (depth !== 0 || !value.slice(contentStart, end).trim()) continue;
+    result += value.slice(copied, start) + ' ';
+    copied = end + 1;
+  }
+  return result + value.slice(copied);
 }

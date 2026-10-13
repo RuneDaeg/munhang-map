@@ -1,4 +1,5 @@
 'use client';
+/* oxlint-disable next/no-img-element -- Local document images use data URLs; do not send them through an image optimizer. */
 
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { splitFormattedText } from '@/lib/text-formatting';
@@ -58,6 +59,7 @@ import { ExportDialog } from '@/components/export-dialog';
 import { QuestionBank } from '@/components/question-bank';
 import { VersionCheck } from '@/components/version-check';
 import { SupportReport } from '@/components/support-report';
+import { AnswerImportDialog, type AnswerUpdate } from '@/components/answer-import-dialog';
 import { saveToQuestionBank } from '@/lib/question-bank';
 import { version } from '@/package.json';
 
@@ -128,10 +130,14 @@ export default function Home() {
   const batchStopRef = useRef(false);
   const [analysisState, setAnalysisState] = useState<ProgressState | null>(null);
   const [bankOpen, setBankOpen] = useState(false);
+  const [answerOpen, setAnswerOpen] = useState(false);
+  const [answerMessage, setAnswerMessage] = useState('');
   const [savingBank, setSavingBank] = useState(false);
   const [bankMessage, setBankMessage] = useState('');
   const operationRef = useRef(false);
-  const busy = status === 'analyzing' || recognizingQuestion !== null || savingBank || batchRunning;
+  const busy = status === 'analyzing' || recognizingQuestion !== null || savingBank || batchRunning || answerOpen;
+  const isHwpx = questionData[0]?.sourceFormat === 'hwpx';
+  const canSaveReview = !isDemo && questionData.length > 0 && (sourcePages.length > 0 || isHwpx);
 
   useEffect(() => {
     void loadAchievementStandards().then((items) => {
@@ -164,7 +170,7 @@ export default function Home() {
       await context.registerTool({
         name: 'get_exam_analysis_summary',
         title: '시험지 분석 요약 조회',
-        description: '현재 화면의 PDF 이름, 문항 수, 성취기준 수와 자동 검토 항목 수를 조회합니다. 정확도는 아닙니다.',
+        description: '현재 화면의 파일 이름, 문항 수, 성취기준 수와 자동 검토 항목 수를 조회합니다. 정확도는 아닙니다.',
         inputSchema: { type: 'object', properties: {}, additionalProperties: false },
         annotations: { readOnlyHint: true, untrustedContentHint: true },
         execute: () => ({ fileName, questionCount: checkedQuestions.length, standardCount: new Set(checkedQuestions.map((q) => q.standardCode).filter(Boolean)).size, reviewQuestionCount: checkedQuestions.filter(q=>q.validationFlags?.length).length }),
@@ -190,12 +196,14 @@ export default function Home() {
 
   async function handleFile(file: File) {
     if (operationRef.current || recognizingQuestion !== null || savingBank) return;
-    if (!file.name.toLowerCase().endsWith('.pdf')) { setError('PDF 파일만 선택할 수 있습니다.'); return; }
+    if (/\.hwp$/i.test(file.name)) { setError('HWP는 HWPX와 다른 파일 형식입니다. 한글에서 ‘다른 이름으로 저장 → HWPX’로 변환해 주세요. 확장자만 바꾸면 열리지 않습니다.'); return; }
+    if (!/\.(pdf|hwpx)$/i.test(file.name)) { setError('시험지는 PDF 또는 HWPX 파일을 선택해 주세요.'); return; }
+    if (file.size > 64 * 1024 * 1024) { setError('시험지 파일은 64MB 이하로 나누어 선택하세요.'); return; }
     operationRef.current = true;
     setFileName(file.name); setSourcePages([]); setEditingCapture(null); setQuestionData([]); setPageCount(0);
     setStatus('analyzing'); setAnalysisProgress(0); setAnalysisState(null); setIsDemo(false);
     setError(''); setQualityWarning(''); setVisionError(''); setVisionProgress(''); setBankMessage(''); setSelected(0);
-    setBatchMessage(''); setBatchProgress(null);
+    setBatchMessage(''); setBatchProgress(null); setAnswerMessage('');
     try {
       const result = await runExamAnalysis(file, (progress) => {
         setAnalysisState(progress); setAnalysisProgress(progress.percent); setVisionProgress(progress.detail);
@@ -205,7 +213,7 @@ export default function Home() {
       setVisionProgress(''); setStatus('ready');
       void getVisionStatus().then(applyVisionStatus).catch(() => undefined);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'PDF 분석 중 오류가 발생했습니다.'); setStatus('error');
+      setError(reason instanceof Error ? reason.message : '파일 분석 중 오류가 발생했습니다.'); setStatus('error');
     } finally { operationRef.current = false; }
   }
 
@@ -214,7 +222,7 @@ export default function Home() {
     setSavingBank(true); setBankMessage('');
     try {
       const result = await saveToQuestionBank(fileName, checkedQuestions, sourcePages);
-      setBankMessage(`${result.saved}문항을 내 문제함에 ${result.updated ? '업데이트' : '저장'}했습니다. 다른 PDF의 문항과 함께 선택해 내보낼 수 있습니다.`);
+      setBankMessage(`${result.saved}문항을 내 문제함에 ${result.updated ? '업데이트' : '저장'}했습니다. 다른 파일의 문항과 함께 선택해 내보낼 수 있습니다.`);
     } catch (reason) { setBankMessage(reason instanceof Error ? reason.message : '문제함에 저장하지 못했습니다.'); }
     finally { setSavingBank(false); }
   }
@@ -223,11 +231,25 @@ export default function Home() {
     setQuestionData((current) => current.map((question, index) => index === selected ? { ...question, text, assessmentText:undefined, mappingReason:undefined, validationFlags:undefined, textEdited:true, visionEnhanced: false } : question));
   }
 
+  function updateSelectedAnswer(answer: string) {
+    setQuestionData(current => current.map((question, index) => index === selected ? { ...question, answer: answer || undefined, answerSource: answer ? '직접 입력' : undefined } : question));
+  }
+
+  function applyAnswers(updates: AnswerUpdate[]) {
+    const byNumber = new Map(updates.map(update => [update.number, update]));
+    setQuestionData(current => current.map(question => {
+      const update = byNumber.get(question.number);
+      return update ? { ...question, answer: update.answer, answerSource: update.answerSource } : question;
+    }));
+    setAnswerMessage(`${updates.length}문항에 정답을 반영했습니다. 검토 JSON 또는 내 문제함에 저장해 보관하세요.`);
+    setAnswerOpen(false);
+  }
+
   async function handleReviewFile(file: File) {
     if (operationRef.current || recognizingQuestion !== null || savingBank) return;
     if (file.size > 80_000_000) { setError('검토 파일은 80MB 이하만 열 수 있습니다.'); return; }
     operationRef.current = true; setAnalysisState(null); setAnalysisProgress(0); setBankMessage('');
-    setBatchMessage(''); setBatchProgress(null);
+    setBatchMessage(''); setBatchProgress(null); setAnswerMessage('');
     setStatus('analyzing'); setEditingCapture(null); setError(''); setVisionError(''); setVisionProgress('저장한 캡처 범위를 불러오는 중');
     try {
       const review = await parseReview(await file.text());
@@ -360,7 +382,7 @@ export default function Home() {
     if (!marker) secondText = `${secondSourceNumber}. ${secondText}`;
     const captureWarning = '텍스트를 수동으로 나눴습니다. 캡처에는 분리 전 영역이 보존되어 있으므로 범위를 확인해 주세요.';
     const first = classifyQuestion({ ...question, text: firstText, captureWarning, captureReviewed: false, textEdited:true, visualChoices:undefined, analysisWarning:undefined, figureImage: undefined, visionEnhanced: false }, standards);
-    const second = classifyQuestion({ ...question, number: secondNumber, sourceQuestionNumber: question.sourceQuestionNumber === undefined ? undefined : secondSourceNumber, text: secondText, captureWarning, captureReviewed: false, textEdited:true, visualChoices:undefined, analysisWarning:undefined, figureImage: undefined, visionEnhanced: false, type: question.type.replace('자동 추출', '수동 분리') }, standards);
+    const second = classifyQuestion({ ...question, answer: undefined, answerSource: undefined, number: secondNumber, sourceQuestionNumber: question.sourceQuestionNumber === undefined ? undefined : secondSourceNumber, text: secondText, captureWarning, captureReviewed: false, textEdited:true, visualChoices:undefined, analysisWarning:undefined, figureImage: undefined, visionEnhanced: false, type: question.type.replace('자동 추출', '수동 분리') }, standards);
     setQuestionData((current) => [...current.slice(0, selected), first, second, ...current.slice(selected + 1)]);
     setSelected(selected + 1);
   }
@@ -418,27 +440,27 @@ export default function Home() {
           <div className="min-w-0 text-sm leading-relaxed">
             <h2 id="document-security-title" className="font-bold">외부 반출 금지 문서를 넣지 마세요</h2>
             <p className="mt-1">미공개 시험지·출제 중 문항·개인정보·기관 기밀 등 외부 전송이 금지된 자료는 사용하지 마세요. API 판독 시 문항 캡처와 추출문(공통 지문 포함)이 선택한 AI 공급자 또는 설정한 서버로 전송됩니다.</p>
-            <p className="mt-1 text-xs">최초 PDF 분석은 로컬 처리이며, API 판독은 별도 실행·확인 후 전송합니다. 키를 로컬에 저장해도 문서 전송을 막아주지는 않습니다. 문항맵은 반출 금지 여부를 자동 판별하지 않습니다.</p>
+            <p className="mt-1 text-xs">PDF·HWPX 최초 분석과 정답 연결은 로컬 처리이며, API 판독은 별도 실행·확인 후 전송합니다. 키를 로컬에 저장해도 문서 전송을 막아주지는 않습니다. 문항맵은 반출 금지 여부를 자동 판별하지 않습니다.</p>
           </div>
         </div>
       </div>
 
       <section className="mx-auto grid max-w-[1540px] gap-4 p-4 lg:grid-cols-[270px_minmax(0,1fr)] lg:p-6">
-        <aside aria-label="현재 PDF·API 설정" className="workspace-sidebar rounded-[22px] p-5 text-white lg:sticky lg:top-[88px] lg:h-[calc(100vh-112px)] lg:overflow-y-auto">
+        <aside aria-label="현재 파일·API 설정" className="workspace-sidebar rounded-[22px] p-5 text-white lg:sticky lg:top-[88px] lg:h-[calc(100vh-112px)] lg:overflow-y-auto">
           <div className="flex items-center justify-between">
             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-white/55">현재 작업</p>
             <Button variant="ghost" size="icon-sm" className="text-white hover:bg-white/10 hover:text-white" aria-label="더보기"><MoreHorizontal /></Button>
           </div>
-          <button aria-label="현재 PDF 정보 · 다른 PDF 선택" disabled={busy} onClick={() => inputRef.current?.click()} className="mt-3 w-full rounded-2xl border border-white/12 bg-white/7 p-4 text-left transition hover:bg-white/10 disabled:opacity-60">
+          <button aria-label="현재 파일 정보 · 다른 PDF/HWPX 선택" disabled={busy} onClick={() => inputRef.current?.click()} className="mt-3 w-full rounded-2xl border border-white/12 bg-white/7 p-4 text-left transition hover:bg-white/10 disabled:opacity-60">
             <div className="flex items-start gap-3">
               <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-accent text-accent-foreground"><FileText className="size-5" /></span>
               <div className="min-w-0">
                 <p className="line-clamp-2 text-sm font-semibold leading-5">{fileName}</p>
-                <p className="mt-1 text-xs text-white/50">{status === 'analyzing' ? `분석 중 · ${analysisProgress}%` : pageCount ? `${pageCount}쪽 · 문항 ${questionData.length}개` : '분석 결과 없음'}</p>
+                <p className="mt-1 text-xs text-white/50">{status === 'analyzing' ? `분석 중 · ${analysisProgress}%` : isHwpx ? `HWPX 구조 추출 · 문항 ${questionData.length}개` : pageCount ? `${pageCount}쪽 · 문항 ${questionData.length}개` : '분석 결과 없음'}</p>
               </div>
             </div>
           </button>
-          <input ref={inputRef} aria-label="PDF 파일 선택" disabled={busy} type="file" accept="application/pdf" className="hidden" onClick={(event) => { event.currentTarget.value = ''; }} onChange={(event) => event.target.files?.[0] && void handleFile(event.target.files[0])} />
+          <input ref={inputRef} aria-label="PDF 또는 HWPX 시험지 선택" disabled={busy} type="file" accept=".pdf,.hwpx,application/pdf" className="hidden" onClick={(event) => { event.currentTarget.value = ''; }} onChange={(event) => event.target.files?.[0] && void handleFile(event.target.files[0])} />
           <input ref={reviewInputRef} aria-label="검토 파일 선택" disabled={busy} type="file" accept=".json,application/json" className="hidden" onClick={(event) => { event.currentTarget.value = ''; }} onChange={(event) => event.target.files?.[0] && void handleReviewFile(event.target.files[0])} />
           <Button variant="outline" disabled={busy} onClick={() => setBankOpen(true)} className="mt-3 w-full border-white/20 bg-white/10 text-white hover:bg-white/20 hover:text-white"><FolderOpen />내 문제함</Button>
 
@@ -489,10 +511,10 @@ export default function Home() {
           <div className="flex flex-col gap-4 rounded-[22px] border bg-card p-4 shadow-sm sm:p-5">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <div>
-                <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">{status === 'analyzing' ? <LoaderCircle className="size-4 animate-spin text-primary" /> : <ScanSearch className="size-4 text-primary" />} {status === 'analyzing' ? (visionProgress || `PDF에서 문항을 찾는 중 · ${analysisProgress}%`) : status === 'error' ? '분석을 완료하지 못했습니다' : isDemo ? '예시 분석 결과' : '새 PDF 분석 완료'}</div>
+                <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">{status === 'analyzing' ? <LoaderCircle className="size-4 animate-spin text-primary" /> : <ScanSearch className="size-4 text-primary" />} {status === 'analyzing' ? (visionProgress || `시험지에서 문항을 찾는 중 · ${analysisProgress}%`) : status === 'error' ? '분석을 완료하지 못했습니다' : isDemo ? '예시 분석 결과' : '시험지 분석 완료'}</div>
                 <h1 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-[28px]">{status === 'analyzing' ? 'API 없이 문항을 분석하고 있습니다' : '문항과 성취기준을 확인하세요'}</h1>
                 {!isDemo && questionData.some((question) => question.examSubject) && <p className="mt-2 text-sm font-medium text-primary">시험지 상단 과목 반영: {[...new Set(questionData.map((question) => question.examSubject?.label).filter(Boolean))].join(' · ')}</p>}
-                {error && <p role="alert" className="mt-2 max-w-2xl text-sm font-medium leading-6 text-destructive">{error} 다른 PDF를 선택하면 새로 분석합니다.</p>}
+                {error && <p role="alert" className="mt-2 max-w-2xl text-sm font-medium leading-6 text-destructive">{error} 다른 PDF/HWPX를 선택하면 새로 분석합니다.</p>}
                 {qualityWarning && <output className="mt-2 block max-w-2xl rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium leading-6 text-amber-800">{qualityWarning}</output>}
                 {visionError && <p role="alert" className="mt-2 max-w-2xl rounded-lg bg-red-50 px-3 py-2 text-sm font-medium leading-6 text-red-700">{visionError}</p>}
                 {(batchRunning || batchMessage) && <div className="mt-2 max-w-2xl rounded-lg border bg-muted/40 p-3">
@@ -502,13 +524,16 @@ export default function Home() {
                   {batchRunning && batchProgress && <Button size="sm" variant="outline" className="mt-2" disabled={batchStopping} onClick={() => { batchStopRef.current = true; setBatchStopping(true); }}>현재 문항 후 중단</Button>}
                 </div>}
                 {bankMessage && <output className="mt-2 block max-w-2xl whitespace-pre-wrap break-words text-sm leading-6 text-primary">{bankMessage}</output>}
+                {answerMessage && <output aria-live="polite" className="mt-2 block text-sm text-primary">{answerMessage}</output>}
+                {isHwpx && <p className="mt-2 max-w-2xl text-sm text-amber-900">HWPX는 문서 구조를 읽습니다. 원본 쪽수·페이지 캡처·배치를 재현하지 않으므로 캡처/API 이미지 판독이 필요하면 PDF를 사용하세요.</p>}
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" disabled={busy} onClick={() => inputRef.current?.click()}><Upload /> PDF 바꾸기</Button>
-                <Button variant="outline" disabled={busy || isDemo || status !== 'ready' || !questionData.length} onClick={() => void recognizeAllQuestions()}>{batchRunning ? <LoaderCircle className="animate-spin" /> : <Sparkles />}{batchRunning ? '전체 API 판독 중…' : '전체 문항 API 판독'}</Button>
+                <Button variant="outline" disabled={busy} onClick={() => inputRef.current?.click()}><Upload /> PDF·HWPX 불러오기</Button>
+                <Button variant="outline" disabled={busy || isDemo || status !== 'ready' || !questionData.length} onClick={() => setAnswerOpen(true)}>정답 파일 연결</Button>
+                <Button variant="outline" title={isHwpx ? '이미지 판독에는 원본 PDF의 페이지 캡처가 필요합니다.' : undefined} disabled={busy || isDemo || isHwpx || status !== 'ready' || !questionData.length} onClick={() => void recognizeAllQuestions()}>{batchRunning ? <LoaderCircle className="animate-spin" /> : <Sparkles />}{batchRunning ? '전체 API 판독 중…' : '전체 문항 API 판독'}</Button>
                 <Button variant="outline" onClick={() => reviewInputRef.current?.click()} disabled={busy}>검토 파일 열기</Button>
-                <Button variant="outline" onClick={() => downloadReview(fileName, checkedQuestions, sourcePages)} disabled={busy || !sourcePages.length}>검토 저장</Button>
-                <Button variant="outline" onClick={() => void saveCurrentToBank()} disabled={busy || isDemo || status !== 'ready' || !sourcePages.length || !questionData.length}>{savingBank ? <LoaderCircle className="animate-spin" /> : <FolderOpen />}{savingBank ? '문제함 저장 중…' : '문제함에 저장'}</Button>
+                <Button variant="outline" onClick={() => downloadReview(fileName, checkedQuestions, sourcePages)} disabled={busy || !canSaveReview}>검토 JSON 저장</Button>
+                <Button variant="outline" onClick={() => void saveCurrentToBank()} disabled={busy || !canSaveReview || status !== 'ready'}>{savingBank ? <LoaderCircle className="animate-spin" /> : <FolderOpen />}{savingBank ? '문제함 저장 중…' : '문제함에 저장'}</Button>
                 <Button onClick={() => setExportOpen(true)} disabled={busy || !questionData.length} className="bg-primary px-4 text-primary-foreground hover:bg-primary/90"><Download /> 내보내기</Button>
               </div>
             </div>
@@ -538,7 +563,7 @@ export default function Home() {
                           <EmptyHeader>
                             <EmptyMedia variant="icon"><ScanSearch /></EmptyMedia>
                             <EmptyTitle>표시할 문항이 없습니다</EmptyTitle>
-                            <EmptyDescription>오류 내용을 확인한 뒤 다른 PDF를 선택해 주세요.</EmptyDescription>
+                            <EmptyDescription>오류 내용을 확인한 뒤 다른 PDF/HWPX를 선택해 주세요.</EmptyDescription>
                           </EmptyHeader>
                         </Empty>
                       )}
@@ -560,7 +585,7 @@ export default function Home() {
                     <div className="border-t bg-muted/35 px-4 py-3 text-center text-xs text-muted-foreground">문항 텍스트와 추천 성취기준은 내보내기 전에 직접 수정할 수 있습니다</div>
                   </div>
 
-                  {checkedQuestions[selected] && <QuestionInspector key={`${fileName}-${selected}`} question={checkedQuestions[selected]} catalog={standards} canMerge={selected > 0} recognizing={recognizingQuestion === checkedQuestions[selected].number} canRecognize={!busy && Boolean(checkedQuestions[selected].questionCaptures?.length)} canEditCapture={!busy && sourcePages.length > 0} onEditCapture={() => setEditingCapture(selected)} onTextChange={updateSelectedText} onStandardChange={updateSelectedStandard} onSubjectChange={updateSelectedSubject} onRefresh={refreshSelectedCandidates} onRecognize={() => void recognizeSelectedQuestion()} onSplit={splitSelectedQuestion} onMerge={mergeWithPrevious} />}
+                  {checkedQuestions[selected] && <QuestionInspector key={`${fileName}-${selected}`} question={checkedQuestions[selected]} catalog={standards} canMerge={selected > 0} recognizing={recognizingQuestion === checkedQuestions[selected].number} canRecognize={!busy && Boolean(checkedQuestions[selected].questionCaptures?.length)} canEditCapture={!busy && sourcePages.length > 0} onEditCapture={() => setEditingCapture(selected)} onTextChange={updateSelectedText} onAnswerChange={updateSelectedAnswer} onStandardChange={updateSelectedStandard} onSubjectChange={updateSelectedSubject} onRefresh={refreshSelectedCandidates} onRecognize={() => void recognizeSelectedQuestion()} onSplit={splitSelectedQuestion} onMerge={mergeWithPrevious} />}
                 </div>
               </TabsContent>
 
@@ -582,6 +607,7 @@ export default function Home() {
       </section>
       {exportOpen && <ExportDialog fileName={fileName} questions={questionData} onClose={() => setExportOpen(false)} />}
       {bankOpen && <QuestionBank onClose={() => setBankOpen(false)} />}
+      {answerOpen && <AnswerImportDialog questions={questionData} onApply={applyAnswers} onClose={() => setAnswerOpen(false)} />}
       {editingCapture !== null && questionData[editingCapture] && <CaptureEditor key={editingCapture} question={questionData[editingCapture]} sourcePages={sourcePages} onClose={() => setEditingCapture(null)} onSave={saveCaptureEdits} />}
       <footer className="mx-auto flex max-w-[1540px] flex-col gap-2 px-6 pb-8 text-xs leading-5 text-muted-foreground sm:flex-row sm:justify-between">
         <span className="text-sm font-medium">제작자: 여광재(온양고등학교)<br /><a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/RuneDaeg/munhang-map/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT 라이선스</a></span>
@@ -592,7 +618,7 @@ export default function Home() {
   );
 }
 
-function QuestionInspector({ question, catalog, canMerge, recognizing, canRecognize, canEditCapture, onEditCapture, onTextChange, onStandardChange, onSubjectChange, onRefresh, onRecognize, onSplit, onMerge }: {
+function QuestionInspector({ question, catalog, canMerge, recognizing, canRecognize, canEditCapture, onEditCapture, onTextChange, onAnswerChange, onStandardChange, onSubjectChange, onRefresh, onRecognize, onSplit, onMerge }: {
   question: AnalyzedQuestion;
   catalog: StandardRecord[];
   canMerge: boolean;
@@ -601,6 +627,7 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canRecogn
   canEditCapture: boolean;
   onEditCapture: () => void;
   onTextChange: (text: string) => void;
+  onAnswerChange: (answer: string) => void;
   onStandardChange: (code: string) => void;
   onSubjectChange: (subjectKey: string) => void;
   onRefresh: () => void;
@@ -638,7 +665,18 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canRecogn
       {/* The scrollable region needs a tab stop for keyboard-only scrolling. */}
       {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
       <section className="question-inspector-body p-5" tabIndex={0} aria-label={`${questionLabel(question)} 문항 상세 내용 · 스크롤 가능`}>
-        {question.examSubject && <p className="mb-3 rounded-lg bg-primary/5 px-3 py-2 text-sm text-primary">{question.examSubject.page}쪽 머리말에서 ‘{question.examSubject.label}’ 감지 · {question.selectedSubjectKey ? '직접 선택한 교과를 우선 반영' : '관련 교과 안에서 성취기준 추천'}</p>}
+        <div className="mb-4 rounded-xl border p-3">
+          {question.sourceItemId && <p className="mb-2 text-xs text-muted-foreground">원본 문항 코드: {question.sourceItemId} · {question.sectionLabel}</p>}
+          <label htmlFor="question-answer" className="block text-sm font-semibold">정답 · 본문과 별도 저장</label>
+          <input id="question-answer" maxLength={500} value={question.answer ?? ''} onChange={event => onAnswerChange(event.target.value)} placeholder="예: ③, 24, 1/2" className="mt-2 w-full rounded border bg-background px-3 py-2 text-sm" />
+          <p className="mt-1 break-words text-xs text-muted-foreground">{question.answerSource ? `출처: ${question.answerSource}` : '정답 파일을 연결하거나 직접 입력하세요.'} 문서에는 정답 포함을 선택할 때만 들어갑니다.</p>
+        </div>
+        {(question.explanation || question.explanationImages?.length) && <details className="mb-4 rounded-xl border p-3">
+          <summary className="cursor-pointer text-sm font-semibold">원문 해설 보기 · 검토 JSON·문제함에만 보존</summary>
+          <Suspense fallback={<p>해설을 불러오는 중…</p>}><MathText text={question.explanation ?? ''} /></Suspense>
+          {question.explanationImages?.map(image => <img key={image.id} src={image.image} alt={`해설 삽입 그림 ${image.id}`} loading="lazy" className="my-2 h-auto max-w-full bg-white" />)}
+        </details>}
+        {question.examSubject && <p className="mb-3 rounded-lg bg-primary/5 px-3 py-2 text-sm text-primary">{question.sourceFormat === 'hwpx' ? 'HWPX 문서 정보' : `${question.examSubject.page}쪽 머리말`}에서 ‘{question.examSubject.label}’ 감지 · {question.selectedSubjectKey ? '직접 선택한 교과를 우선 반영' : '관련 교과 안에서 성취기준 추천'}</p>}
         {question.captureWarning && <output className="mb-3 block rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{question.captureWarning}</output>}
         {question.analysisWarning && <output className="mb-3 block rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{question.analysisWarning}</output>}
         {question.mappingReason && <p className="mb-3 rounded-lg bg-primary/5 px-3 py-2 text-sm">{question.mappingArea && <strong>{question.mappingArea} · </strong>}{question.mappingReason}</p>}
@@ -651,6 +689,10 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canRecogn
             <img src={capture.image} alt={`${questionLabel(question)} 문항의 발문, 그림자료, 선택지를 포함한 원문 캡처 ${index + 1}`} className="h-auto w-full bg-white object-contain" />
           </figure>
         ))}
+        {question.sourceImages?.map(image => <figure key={image.id} className="mb-4 overflow-hidden rounded-xl border">
+          <figcaption className="bg-muted px-3 py-2 text-xs">{image.label || `HWPX 삽입 그림 ${image.id}`} · 원본 페이지 캡처 아님</figcaption>
+          <img src={image.image} alt={image.label || `HWPX 삽입 그림 ${image.id}`} className="h-auto max-w-full bg-white" />
+        </figure>)}
         <div className="mb-5 rounded-xl border bg-muted/35 p-3">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <p className="text-sm font-semibold text-muted-foreground">문항 미리보기 · 수식·표·보기</p>
@@ -685,10 +727,10 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canRecogn
         </Button>
         <p className="mt-2 text-xs leading-5 text-muted-foreground">API 판독은 선택 사항입니다. 실행 전 문항 캡처·추출문 전송과 비용 가능성을 확인합니다. 문항 캡처가 없으면 먼저 캡처 범위를 지정하세요.</p>
         <div className="mt-3 grid grid-cols-2 gap-2">
-          <Button variant="outline" size="sm" disabled={cursor < 8 || cursor > question.text.length - 8} onClick={() => onSplit(cursor)}>커서에서 문항 나누기</Button>
-          <Button variant="outline" size="sm" disabled={!canMerge} onClick={onMerge}>이전 문항과 합치기</Button>
+          <Button variant="outline" size="sm" disabled={question.sourceFormat === 'hwpx' || cursor < 8 || cursor > question.text.length - 8} onClick={() => onSplit(cursor)}>커서에서 문항 나누기</Button>
+          <Button variant="outline" size="sm" disabled={question.sourceFormat === 'hwpx' || !canMerge} onClick={onMerge}>이전 문항과 합치기</Button>
         </div>
-        <p className="mt-2 text-xs leading-5 text-muted-foreground">경계가 틀리면 새 문항이 시작되는 위치에 커서를 놓고 나누세요.</p>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">{question.sourceFormat === 'hwpx' ? 'HWPX는 정답·해설·그림의 문항별 연결을 보존하기 위해 여기서 분리·병합하지 않습니다. 경계가 틀리면 한글 원본을 수정해 다시 가져오세요.' : '경계가 틀리면 새 문항이 시작되는 위치에 커서를 놓고 나누세요.'}</p>
         {!question.questionCaptures?.length && question.figureImage && (
           <figure className="mt-4 overflow-hidden rounded-xl border">
             <figcaption className="bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">자동 감지한 문항 그림자료 · 문서에 첨부됨</figcaption>
