@@ -297,6 +297,9 @@ const MATH_FONTS: Record<string, string> = { rm: 'mathrm', it: 'mathit', bold: '
 // Common adjacent variable/unit letters. Only this explicit subset is split;
 // unknown word-like native commands remain unconverted.
 const MATH_LETTERS = new Set('xy mv mg mgh mgd mgH mgx hc mE kL gh hf kg cm vt kd ct gd at ma Fd kx km al mal vx Ft aL kF eV hv pv He MeV Me Li Ba Kr Hz PQ BC AC QS BS'.split(' '));
+// A finite list of juxtaposed variables/labels, not a generic word splitter.
+// In particular `gt` is g times t here, never the HTML-like alias for >.
+for (const letters of 'PV nRT RT nR CV LC gL mgL mr gt ad ab pq dv AB CD AD HA OH CO NH NaCl'.split(' ')) MATH_LETTERS.add(letters);
 // Roman font declarations are lexical scope, not permission to accept an
 // arbitrary native command as text. Accept bounded element sequences and a
 // small vocabulary of units/state labels, preserving case and atom counts.
@@ -314,11 +317,34 @@ const scriptBaseToken = (token: string) => token === '{' || token === 'LEFT'
   || MATH_FUNCTIONS.has(token) || GREEK_SYMBOLS.has(token)
   || ['SUM', 'PROD', 'INT', 'DINT', 'TINT', 'OINT', 'UNION', 'INTER', ')', ']'].includes(token);
 
+// Hancom's ordinary commands are case-insensitive; arrows and Greek letters
+// are not. Resolve only this explicit command vocabulary, keeping DELTA/delta
+// and RARROW/rarrow distinct and unknown words opaque.
+const CASE_INSENSITIVE_MATH = new Map<string, string>();
+for (const name of [...Object.keys(MATH_SYMBOLS), ...Object.keys(MATH_ACCENTS), ...Object.keys(MATH_FONTS), ...MATH_FUNCTIONS,
+  'LEFT', 'RIGHT', 'LSUB', 'LSUP', 'OVER', 'SQRT', 'DLINE', 'LCEIL', 'RCEIL', 'LFLOOR', 'RFLOOR']) {
+  if (/^[A-Za-z]+$/.test(name) && !GREEK_SYMBOLS.has(name) && !/^(?:rarrow|larrow|lrarrow|prime|lim)$/i.test(name))
+    CASE_INSENSITIVE_MATH.set(name.toLowerCase(), name);
+}
+const canonicalMathToken = (token: string) => {
+  // Preserve exact spellings first, especially the element In (indium) next
+  // to a roman-font switch. It is not the case-insensitive set operator IN.
+  if (Object.hasOwn(MATH_SYMBOLS, token) || romanLiteral(token)) return token;
+  return CASE_INSENSITIVE_MATH.get(token.toLowerCase()) ?? token;
+};
+const JOINED_MATH_COMMANDS = /^(triangle|bullet|times|cdot|sqrt|bar|vec|hat|ddot|dot|tilde|under|sin|cos|tan|log|over)([A-Za-z]+)$/i;
+const unbracedMathOperand = (token: string | undefined) => !!token && (/^[A-Za-z]$|^\d+(?:\.\d+)?$/.test(token)
+  || MATH_LETTERS.has(token) || GREEK_SYMBOLS.has(token));
+const CANONICAL_MATH_COMMANDS = new Set(CASE_INSENSITIVE_MATH.values());
+const knownMathToken = (token: string) => Object.hasOwn(MATH_SYMBOLS, token) || Object.hasOwn(MATH_ACCENTS, token)
+  || Object.hasOwn(MATH_FONTS, token) || MATH_FUNCTIONS.has(token) || CANONICAL_MATH_COMMANDS.has(token);
+const singleOperandBoundary = (token: string | undefined) => !token || /^(?:[+\-=,;)}\]]|RIGHT|<=|>=|!=|LEQ|GEQ|NEQ)$/.test(token);
+
 /** Explicit native-equation subset. Unknown commands preserve the source, never guess. */
 export function hwpxEquationToLatex(script: string): string | undefined {
   if (!script.trim() || script.length > 20_000) return undefined;
   const tokens: string[] = [];
-  const scan = /\s+|"[^"\r\n]*"|[A-Za-z]+|[0-9]+(?:\.[0-9]+)?|!=|\+-|-\+|<=|>=|[{}_^*()+\-=/.,:;!?<>|[\]`~]|[\u0080-\uffff]/gy;
+  const scan = /\s+|"[^"\r\n]*"|[A-Za-z]+|[0-9]+(?:\.[0-9]+)?|!=|\+-|-\+|<=|>=|[{}_^*%()+\-=/.,:;!?<>|[\]`~]|[\u0080-\uffff]/gy;
   let at = 0;
   while (at < script.length) {
     scan.lastIndex = at;
@@ -329,9 +355,16 @@ export function hwpxEquationToLatex(script: string): string | undefined {
       const token = match[0];
       // Hancom permits adjacent font switches (rmNaCl, itaq), but an unknown
       // word such as rmMATRIX must not become harmless-looking roman letters.
-      const fontWord = /^(rmbold|bold|rm|it)([A-Za-z]+)$/.exec(token);
-      if (fontWord && romanLiteral(fontWord[2])) tokens.push(fontWord[1], fontWord[2]);
-      else tokens.push(token);
+      const fontWord = /^(rmbold|bold|rm|it)([A-Za-z]+)$/i.exec(token);
+      const joined = JOINED_MATH_COMMANDS.exec(token);
+      const canonical = canonicalMathToken(token);
+      // A complete command wins over a valid-looking prefix: CDOTS is not
+      // CDOT followed by S, and the same rule applies to case aliases.
+      if (knownMathToken(canonical)) tokens.push(canonical);
+      else if (fontWord && romanLiteral(fontWord[2])) tokens.push(canonicalMathToken(fontWord[1]), fontWord[2]);
+      else if (joined && unbracedMathOperand(joined[2])) tokens.push(canonicalMathToken(joined[1]), joined[2]);
+      else if (/^[¹²³]$/.test(token)) tokens.push('^', '{', String('¹²³'.indexOf(token) + 1), '}');
+      else tokens.push(canonicalMathToken(token));
     }
     if (tokens.length > 4000) return undefined;
   }
@@ -412,8 +445,13 @@ export function hwpxEquationToLatex(script: string): string | undefined {
       scripts.clear();
       if (/^over$/i.test(tokens[position] ?? '')) {
         // Hancom's unbraced OVER scope is layout-dependent. Both operands
-        // must be explicit groups; this also preserves chained equalities.
-        if (token !== '{' || tokens[position + 1] !== '{') return bad();
+        // must be explicit groups, except a complete isolated numeric ratio.
+        // Do not guess whether `1 over 2 n` means (1/2)n or 1/(2n).
+        const numericRatio = /^\d+(?:\.\d+)?$/.test(token)
+          && /^\d+(?:\.\d+)?$/.test(tokens[position + 1] ?? '')
+          && (position + 2 === tokens.length || tokens[position + 2] === stop)
+          && (parts.length === 0 || parts.length === 2 && parts[1] === '=');
+        if (!numericRatio && (token !== '{' || tokens[position + 1] !== '{')) return bad();
         position++;
         value = `\\frac{${value}}{${atom(font)}}`;
         previousCompound = true;
@@ -439,7 +477,10 @@ export function hwpxEquationToLatex(script: string): string | undefined {
       return `{${body}}`;
     }
     if (/^sqrt$/i.test(token)) {
-      if (tokens[position] !== '{') return bad();
+      if (tokens[position] !== '{' && !unbracedMathOperand(tokens[position])) return bad();
+      // `sqrt2x` could mean sqrt(2x), not sqrt(2) times x. Only a delimited
+      // single operand is safe; an explicit group can contain any expression.
+      if (tokens[position] !== '{' && !singleOperandBoundary(tokens[position + 1])) return bad();
       return `\\sqrt{${atom(font)}}`;
     }
     if (token === 'LEFT') {
@@ -448,7 +489,8 @@ export function hwpxEquationToLatex(script: string): string | undefined {
       return `\\left${left} ${body} \\right${fence()}`;
     }
     if (Object.hasOwn(MATH_ACCENTS, token)) {
-      if (tokens[position] !== '{') return bad();
+      if (tokens[position] !== '{' && !unbracedMathOperand(tokens[position])) return bad();
+      if (tokens[position] !== '{' && !singleOperandBoundary(tokens[position + 1])) return bad();
       return `\\${MATH_ACCENTS[token]}{${atom(font)}}`;
     }
     if (Object.hasOwn(MATH_SYMBOLS, token)) return MATH_SYMBOLS[token];
@@ -460,11 +502,12 @@ export function hwpxEquationToLatex(script: string): string | undefined {
     if (token === '-+') return '\\mp';
     if (token === '<=') return '\\le';
     if (token === '>=') return '\\ge';
+    if (token === '%') return '\\%';
     if (/^[A-Za-z]$|^\d+(?:\.\d+)?$/.test(token)) return font ? `\\${font}{${token}}` : token;
     if ((font === 'mathrm' || font === 'mathbf' || font === 'mathit') && romanLiteral(token)) return `\\${font}{${token}}`;
     if (MATH_LETTERS.has(token)) return token.split('').map((letter) => font ? `\\${font}{${letter}}` : letter).join(' ');
     if (/^[()+\-=/.,:;!?<>|[\]]$/.test(token)) return token;
-    if (/^[가-힣ㄱ-ㅎㅏ-ㅣ①-⑳㉠-㉿Ⅰ-Ⅻ]$/.test(token)) return `\\text{${token}}`;
+    if (/^[가-힣ㄱ-ㅎㅏ-ㅣ①-⑳㉠-㉿Ⓐ-ⓩⅠ-Ⅻ]$/.test(token)) return `\\text{${token}}`;
     // Native identifiers with several letters, matrices, ROOT/OF, and layout
     // commands need a full Hancom grammar; keep their original script instead.
     return bad();
