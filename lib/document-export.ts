@@ -19,14 +19,14 @@ export function createAnswerCsvBytes(title: string, questions: AnalyzedQuestion[
   // Keep identity fields separate so teachers can edit answers in a spreadsheet
   // and reconnect repeated printed numbers by publisher code and section.
   const rows = [
-    ['원본 파일', '문항 코드', '원본 문항 번호', '구분', '정답', '정답 출처', '성취기준 코드', '성취기준 내용', '성취기준 교과', '정답 인코딩'],
+    ['원본 파일', '문항 코드', '원본 문항 번호', '구분', '정답', '정답 출처', '성취기준 코드', '성취기준 내용', '성취기준 교과', '정답 인코딩', '원본 문항 라벨'],
     ...questions.map(question => {
       const answer = answerText(question);
       // The parser removes one protective apostrophe only for this explicit
       // codec. Escape an existing apostrophe so a literal '-12 also survives.
       const encodedAnswer = answer.startsWith("'") ? `'${answer}` : answer;
-      return [sourceBasename(question.sourceFileName || title), question.sourceItemId || '', String(question.sourceQuestionNumber ?? question.number), question.sectionLabel || '',
-        encodedAnswer, sourceBasename(question.answerSource || ''), question.standardCode, question.standard, question.domain, 'spreadsheet-text-v1'];
+      return [sourceBasename(question.sourceFileName || title), question.sourceItemId || '', question.sourceQuestionLabel ? '' : String(question.sourceQuestionNumber ?? question.number), question.sectionLabel || '',
+        encodedAnswer, sourceBasename(question.answerSource || ''), question.standardCode, question.standard, question.domain, 'spreadsheet-text-v1', question.sourceQuestionLabel || ''];
     }),
   ];
   return encoder.encode('\uFEFF' + rows.map(row => new TextDecoder().decode(captureCsvRow(row))).join(''));
@@ -64,7 +64,7 @@ export async function createStandardArchive(title: string, questions: AnalyzedQu
     totalBytes += data.length;
     if (totalBytes > 150_000_000) throw new Error('문서 묶음이 150MB를 넘습니다. 선택 문항을 나누어 내보내 주세요.');
     entries.push({ name, data });
-    for (const question of group.questions) csv.push([name, group.code, group.domain, sourceBasename(question.sourceFileName || title), question.sectionLabel ? questionLabel(question) : String(question.sourceQuestionNumber ?? question.number), ...(options.includeAnswers ? answerMetadata(question) : [])]);
+    for (const question of group.questions) csv.push([name, group.code, group.domain, sourceBasename(question.sourceFileName || title), question.sectionLabel || question.sourceQuestionLabel ? questionLabel(question) : String(question.sourceQuestionNumber ?? question.number), ...(options.includeAnswers ? answerMetadata(question) : [])]);
     onProgress?.(index + 1, groups.length);
     await new Promise((resolve) => setTimeout(resolve, 0));
   }

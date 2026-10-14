@@ -25,10 +25,16 @@ export function questionStorageProblem(source: string): string | null {
   }
 }
 
-export function assertQuestionsStorable(questions: Array<{ number: number; text: string }>) {
+export function assertQuestionsStorable(questions: Array<{ number: number; text: string; explanation?: string }>) {
+  let failedQuestions = 0;
   const errors = questions.flatMap(q => {
-    const error = questionStorageProblem(q.text);
-    return error ? [`${q.number}번: ${error}`] : [];
+    const bodyError = questionStorageProblem(q.text);
+    // Missing/blank explanations are optional, but a newly saved explanation
+    // must satisfy the same editable DOCX/HWPX checks as the question body.
+    const explanationError = q.explanation?.trim() ? questionStorageProblem(q.explanation) : null;
+    const errors = [bodyError && `${q.number}번: ${bodyError}`, explanationError && `${q.number}번 해설: ${explanationError}`].filter((error): error is string => !!error);
+    if (errors.length) failedQuestions++;
+    return errors;
   });
-  if (errors.length) throw new Error(`문제함에 저장하지 않았습니다. ${errors.length}문항의 수식·텍스트를 먼저 수정해 주세요.\n${errors.slice(0, 10).join('\n')}${errors.length > 10 ? '\n나머지 오류는 앞의 문항을 수정한 뒤 다시 확인해 주세요.' : ''}`);
+  if (errors.length) throw new Error(`문제함에 저장하지 않았습니다. ${failedQuestions}문항의 수식·텍스트를 먼저 수정해 주세요.\n${errors.slice(0, 10).join('\n')}${errors.length > 10 ? '\n나머지 오류는 앞의 문항을 수정한 뒤 다시 확인해 주세요.' : ''}`);
 }

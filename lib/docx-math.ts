@@ -206,7 +206,8 @@ function row(children: MathNode[], style: Style): string {
       const expression = takeNary(index);
       index = expression.last;
       parts.push(expression.value);
-    } else if (['msub', 'msup', 'msubsup'].includes(node.tag) && nodes(node)[0]?.tag === 'mrow' && nodes(node)[0].children.length === 0 && children[index + 1] && children[index + 1].tag !== 'mo') {
+    } else if (['msub', 'msup', 'msubsup'].includes(node.tag) && nodes(node)[0]?.tag === 'mrow' && nodes(node)[0].children.length === 0 && children[index + 1] && children[index + 1].tag !== 'mo'
+      && !(node.tag === 'msup' && /^[∘°]$/.test(content(nodes(node)[1])))) {
       const args = nodes(node);
       const sub = node.tag === 'msup' ? '' : convert(args[1], style);
       const sup = node.tag === 'msub' ? '' : convert(args[node.tag === 'msup' ? 1 : 2], style);

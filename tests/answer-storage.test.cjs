@@ -6,6 +6,7 @@ const { createRequire } = require('node:module');
 const { createCanvas } = createRequire(require.resolve('pdfjs-dist/package.json'))('@napi-rs/canvas');
 const { createQuestionBank, questionSnapshot } = require('../local/question-bank.cjs');
 const { readQuestionContext } = require('../lib/question-context.ts');
+const { questionLabel } = require('../lib/question-context.ts');
 const { serializeReview, parseReview } = require('../lib/review-file.ts');
 const { saveToQuestionBank, updateBankItem } = require('../lib/question-bank.ts');
 const { questionStorageProblem } = require('../lib/question-storage-check.ts');
@@ -86,6 +87,47 @@ test('HWPX bank persists text-only entries across restart while PDF still requir
   }
   assert.throws(() => bank.save({ sourceFileName: 'book.hwpx', sourceFingerprint: 'b'.repeat(64), questions: [hwpx] }), /일치/);
   assert.equal(restored.list().length, 1);
+});
+
+test('named exercises preserve raw publisher metadata through review, bank restart, CSV and document labels', async t => {
+  const { directory, bank } = fixture(t);
+  const question = { ...hwpx, number: 42, sourceQuestionNumber: undefined, sourceQuestionLabel: '유형 익히기',
+    sourceItemId: 'SYNTH-PRACTICE', sectionLabel: '$$강 · @@쪽', answer: '③',
+    sourceBookMetadata: { unit: '$$', page: '@@', questionLabel: '유형 익히기' } };
+  const review = (await parseReview(serializeReview('book.hwpx', [question], []))).questions[0];
+  bank.save({ sourceFileName: 'book.hwpx', sourceFingerprint: fingerprint, questions: [review] });
+  const restarted = createQuestionBank(directory), [summary] = restarted.list(), restored = restarted.inspect(summary.id).question;
+  for (const record of [review, restored]) {
+    assert.equal(record.sourceQuestionNumber, undefined);
+    assert.equal(record.sourceQuestionLabel, '유형 익히기');
+    assert.deepEqual(record.sourceBookMetadata, question.sourceBookMetadata);
+    assert.equal(questionLabel(record), '$$강 · @@쪽 · 유형 익히기');
+  }
+  assert.equal(questionLabel(summary), '$$강 · @@쪽 · 유형 익히기');
+  const csv = Buffer.from(createAnswerCsvBytes('book.hwpx', [restored])).toString();
+  assert.match(csv, /"SYNTH-PRACTICE","","\$\$강 · @@쪽"/);
+  assert.doesNotMatch(csv, /"42"/);
+  const parsed = parseAnswerKeyText(csv, { format: 'csv' });
+  assert.deepEqual(parsed.warnings, []);
+  assert.equal(parsed.entries[0].number, undefined);
+  assert.equal(parsed.entries[0].sourceQuestionLabel, '유형 익히기');
+  assert.equal(previewAnswerMatches([restored], parsed.entries)[0].status, 'matched');
+  for (const format of ['docx', 'hwpx']) {
+    const bytes = format === 'docx' ? createDocxBytes('합성', [restored]) : createHwpxBytesFromTemplate('합성', [restored], template);
+    const content = unzip(bytes).get(format === 'docx' ? 'word/document.xml' : 'Contents/section0.xml').toString();
+    assert.match(content, /유형 익히기 문항/); assert.doesNotMatch(content, /42번 문항/);
+  }
+});
+
+test('untrusted named identity metadata is bounded and whitelisted in both storage paths', () => {
+  const valid = { ...hwpx, sourceQuestionNumber: undefined, sourceQuestionLabel: '예제 A',
+    sourceBookMetadata: { category: '01', page: '005', questionLabel: '예제 A', apiKey: 'NEVER_COPY' } };
+  for (const read of [q => readQuestionContext(q), q => questionSnapshot(q, 'book.hwpx')]) {
+    assert.equal(read(valid).sourceBookMetadata.apiKey, undefined);
+    for (const patch of [{ sourceQuestionNumber: 1 }, { sourceQuestionLabel: '001x' }, { sourceQuestionLabel: 'x'.repeat(81) },
+      { sourceBookMetadata: { unit: '01', category: '01', questionLabel: '예제 A' } },
+      { sourceBookMetadata: { unit: '01', page: '\uE000', questionLabel: '예제 A' } }, { sourceBookMetadata: [] }]) assert.throws(() => read({ ...valid, ...patch }), /원문|라벨|번호/);
+  }
 });
 
 test('answer-only bank update preserves other metadata and sibling; stale write fails', t => {
@@ -176,7 +218,7 @@ test('answer CSV exports separate identities and roundtrips editable answers to 
   ];
   const before = JSON.stringify(questions);
   const csv = Buffer.from(createAnswerCsvBytes('synthetic.hwpx', questions)).toString();
-  assert.equal(csv.split('\r\n')[0], '\uFEFF"원본 파일","문항 코드","원본 문항 번호","구분","정답","정답 출처","성취기준 코드","성취기준 내용","성취기준 교과","정답 인코딩"');
+  assert.equal(csv.split('\r\n')[0], '\uFEFF"원본 파일","문항 코드","원본 문항 번호","구분","정답","정답 출처","성취기준 코드","성취기준 내용","성취기준 교과","정답 인코딩","원본 문항 라벨"');
   assert.match(csv, /"SYNTH-0001","23","01강 · 006쪽","③"/);
   const parsed = parseAnswerKeyText(csv, { format: 'csv', sourceFileName: 'synthetic_정답.csv' });
   assert.deepEqual(parsed.warnings, []);

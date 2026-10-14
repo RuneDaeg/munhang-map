@@ -1,9 +1,11 @@
 import type { PageText } from './pdf-layout';
+import { bookMetadataLine, parseBookMetadata } from './book-metadata';
 
 /** Answer imports are suggestions. The caller must ask the user before applying them. */
 export type AnswerKeyEntry = {
   id: string;
   number?: number;
+  sourceQuestionLabel?: string;
   value: string;
   /** Explicit publisher/item identity, when supplied by the source document. */
   sourceItemId?: string;
@@ -18,6 +20,7 @@ export type AnswerKeyOptions = { format?: 'text' | 'csv'; sourceFileName?: strin
 export type AnswerMatchQuestion = {
   number: number;
   sourceQuestionNumber?: number;
+  sourceQuestionLabel?: string;
   sourceItemId?: string;
   sectionLabel?: string;
   examSubject?: { label: string; subjectKeys?: string[] };
@@ -37,6 +40,7 @@ type SourceLine = { text: string; line: number; page?: number };
 const numberHeader = /^(?:원본문항번호|문항(?:번호)?|문제(?:번호)?|번호|number|question(?:number)?|sourcequestionnumber)$/i;
 const answerHeader = /^(?:정답|답|답안|answer|value)$/i;
 const itemHeader = /^(?:문항코드|sourceitemid)$/i;
+const labelHeader = /^(?:원본문항라벨|sourcequestionlabel)$/i;
 const normalizeLabel = (value: string) => value.normalize('NFKC').replace(/[\s·ㆍ()[\]（）]/g, '').toLowerCase();
 const clean = (value: string) => value.replace(/^\uFEFF/, '').replace(/\s+/g, ' ').trim();
 const printedNumber = (value: string) => /^(?:0*[1-9]\d{0,5})(?:번)?$/.test(value.trim()) ? Number(value.trim().replace(/번$/, '')) : undefined;
@@ -216,10 +220,12 @@ function parseCsv(text: string, options: AnswerKeyOptions): AnswerKeyResult {
   const numberIndex = header.findIndex(value => numberHeader.test(value));
   const answerIndex = header.findIndex(value => answerHeader.test(value));
   const itemIndex = header.findIndex(value => itemHeader.test(value));
+  const labelIndex = header.findIndex(value => labelHeader.test(value));
   const encodingIndex = header.findIndex(value => /^(?:정답인코딩|answerencoding)$/i.test(value));
   const hasHeader = (numberIndex >= 0 || itemIndex >= 0) && answerIndex >= 0;
   if (hasHeader && (header.filter(value => numberHeader.test(value)).length > 1 || header.filter(value => answerHeader.test(value)).length !== 1
     || header.filter(value => itemHeader.test(value)).length > 1 || header.filter(value => /^(?:정답인코딩|answerencoding)$/i.test(value)).length > 1
+    || header.filter(value => labelHeader.test(value)).length > 1
     || header.filter(value => /^(?:과목|교과|subject)$/.test(value)).length > 1 || header.filter(value => /^(?:구분|선택과목|section|sectionlabel)$/.test(value)).length > 1))
     return { entries: [], warnings: ['CSV의 문항 번호·코드·정답·과목·구분 열이 중복되어 있습니다.'] };
   if (!hasHeader && header.some(value => numberHeader.test(value) || itemHeader.test(value) || answerHeader.test(value)))
@@ -231,6 +237,7 @@ function parseCsv(text: string, options: AnswerKeyOptions): AnswerKeyResult {
     const rawNumber = clean(row.cells[hasHeader ? numberIndex : 0] ?? '');
     const number = printedNumber(rawNumber);
     const sourceItemId = hasHeader && itemIndex >= 0 ? clean(row.cells[itemIndex] ?? '') : '';
+    const sourceQuestionLabel = hasHeader && labelIndex >= 0 ? clean(row.cells[labelIndex] ?? '') : '';
     const encoding = hasHeader && encodingIndex >= 0 ? clean(row.cells[encodingIndex] ?? '') : '';
     let value = clean(row.cells[hasHeader ? answerIndex : 1] ?? '');
     // Only the app's explicit text-encoding marker permits removing a CSV
@@ -238,12 +245,14 @@ function parseCsv(text: string, options: AnswerKeyOptions): AnswerKeyResult {
     if (encoding === 'spreadsheet-text-v1' && value.startsWith("'")) value = value.slice(1);
     if (row.cells.length !== (hasHeader ? header.length : 2) || (number === undefined && (!sourceItemId || !!rawNumber))
       || sourceItemId && (!/^[^\s#[\]{}<>]{1,200}$/.test(sourceItemId) || /[\p{Cc}\p{Cf}]/u.test(sourceItemId) || hasBrokenGlyph(sourceItemId))
+      || sourceQuestionLabel && (!sourceItemId || rawNumber || !/^[\p{L}][^#<>\p{Cc}\p{Cf}\uE000-\uF8FF\uFFFD]{0,79}$/u.test(sourceQuestionLabel))
       || encoding && encoding !== 'spreadsheet-text-v1' || !value || value.length > 500 || hasBrokenGlyph(value) || (!hasHeader && !compactAnswer(value))) {
       warnings.push(`${row.line}행: 문항 번호 또는 정답을 확인할 수 없어 제외했습니다.`);
       continue;
     }
     entries.push({ id: `answer-${entries.length + 1}`, ...(number !== undefined ? { number } : {}), value,
       ...(sourceItemId ? { sourceItemId } : {}),
+      ...(sourceQuestionLabel ? { sourceQuestionLabel } : {}),
       ...(hasHeader && subjectIndex >= 0 && clean(row.cells[subjectIndex]) ? { subject: clean(row.cells[subjectIndex]) } : {}),
       ...(hasHeader && sectionIndex >= 0 && clean(row.cells[sectionIndex]) ? { sectionLabel: clean(row.cells[sectionIndex]) } : {}),
       ...(options.sourceFileName ? { sourceFileName: options.sourceFileName } : {}), sourceLine: row.line });
@@ -251,8 +260,7 @@ function parseCsv(text: string, options: AnswerKeyOptions): AnswerKeyResult {
   return { entries, warnings };
 }
 
-type BookItem = { number: number; sourceItemId: string; sectionLabel?: string; sourcePage?: number; sourceLine: number };
-const bookMetadataLine = /^\s*#(?:강|쪽|번|문항코드)(?=\s|$)/;
+type BookItem = { number?: number; sourceQuestionLabel?: string; sourceItemId: string; sectionLabel?: string; sourcePage?: number; sourceLine: number };
 function parseMarkedBook(lines: string[], options: AnswerKeyOptions): AnswerKeyResult {
   const entries: AnswerKeyEntry[] = [], warnings: string[] = [];
   let item: BookItem | undefined;
@@ -266,19 +274,13 @@ function parseMarkedBook(lines: string[], options: AnswerKeyOptions): AnswerKeyR
     if (bookMetadataLine.test(line)) {
       finishItem();
       item = undefined; awaitingAnswer = false; foundAnswer = false;
-      const fields = [...line.matchAll(/#(강|쪽|번|문항코드)\s+([^#]*?)(?=\s*#|$)/g)];
-      const values = new Map(fields.map(field => [field[1], clean(field[2])]));
-      const number = printedNumber(values.get('번') ?? '');
-      const code = values.get('문항코드');
-      const unit = values.get('강'), page = values.get('쪽');
-      if (fields.length !== values.size || number === undefined || !code || !/^[^\s#[\]{}<>]{1,128}$/.test(code)
-        || hasBrokenGlyph(code) || unit !== undefined && !/^\d{1,6}$/.test(unit) || page !== undefined && !/^\d{1,6}$/.test(page)) {
+      const metadata = parseBookMetadata(line);
+      if (!metadata) {
         warnings.push(`${index + 1}행: 문항 번호·코드·단원·쪽 정보가 불완전하거나 중복되어 정답 연결을 보류했습니다.`);
         continue;
       }
-      item = { number, sourceItemId: code, sourceLine: index + 1,
-        ...(unit && page ? { sectionLabel: `${unit}강 · ${page}쪽` } : {}),
-        ...(page && Number(page) > 0 ? { sourcePage: Number(page) } : {}) };
+      item = { number: metadata.number, sourceQuestionLabel: metadata.sourceQuestionLabel, sourceItemId: metadata.sourceItemId,
+        sectionLabel: metadata.sectionLabel, sourcePage: metadata.sourcePage, sourceLine: index + 1 };
       continue;
     }
     if (/^\[\s*정답\s*\/\s*모범답안\s*\]$/.test(line)) {
@@ -394,17 +396,19 @@ function compatibleScope(question: AnswerMatchQuestion, entry: AnswerKeyEntry) {
     && (!entry.subject || subjectLabels(question).includes(normalizeLabel(entry.subject)));
 }
 const sameAnswer = (left: string, right: string) => clean(left) === clean(right);
+const sourceNumber = (question: AnswerMatchQuestion) => question.sourceQuestionLabel ? undefined : question.sourceQuestionNumber ?? question.number;
 
 /** No mutation: duplicates, missing scope, and existing different answers need review. */
 export function previewAnswerMatches(questions: AnswerMatchQuestion[], entries: AnswerKeyEntry[]): AnswerMatch[] {
   const matches: AnswerMatch[] = entries.map(entry => {
     const candidates = entry.sourceItemId
       ? questions.filter(question => question.sourceItemId === entry.sourceItemId)
-      : questions.filter(question => (question.sourceQuestionNumber ?? question.number) === entry.number && compatibleScope(question, entry));
+      : questions.filter(question => entry.number !== undefined && sourceNumber(question) === entry.number && compatibleScope(question, entry));
     const questionNumbers = candidates.map(question => question.number);
     if (!candidates.length) return { entry, status: 'unmatched', questionNumbers, message: entry.sourceItemId ? '같은 문항 코드의 문항을 찾지 못했습니다. 번호만으로 연결하지 않았습니다.' : '같은 원본 번호와 과목·구분의 문항을 찾지 못했습니다.' };
     if (candidates.length > 1) return { entry, status: 'ambiguous', questionNumbers, message: entry.sourceItemId ? '같은 문항 코드가 여러 문항에 있습니다. 원본을 확인해 주세요.' : '같은 원본 번호의 문항이 여러 개입니다. 과목·구분을 확인해 주세요.' };
-    if (entry.sourceItemId && ((entry.number !== undefined && (candidates[0].sourceQuestionNumber ?? candidates[0].number) !== entry.number) || !compatibleScope(candidates[0], entry)))
+    if (entry.sourceItemId && ((entry.number !== undefined && sourceNumber(candidates[0]) !== entry.number)
+      || (entry.sourceQuestionLabel !== undefined && candidates[0].sourceQuestionLabel !== entry.sourceQuestionLabel) || !compatibleScope(candidates[0], entry)))
       return { entry, status: 'conflict', questionNumbers, message: '문항 코드는 같지만 원본 번호 또는 과목·구분 정보가 다릅니다. 직접 확인해 주세요.' };
     const previous = candidates[0].answer;
     if (previous !== undefined && previous.trim() && !sameAnswer(previous, entry.value))

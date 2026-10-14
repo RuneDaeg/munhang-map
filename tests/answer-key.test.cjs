@@ -177,6 +177,23 @@ test('matching book codes cannot conceal conflicting printed numbers, sections, 
   assert.deepEqual(previewAnswerMatches([question], [entry, { ...entry, id: 'duplicate', value: '3' }]).map(match => match.status), ['conflict', 'conflict']);
 });
 
+test('named book exercises match only explicit identity and never fall back to internal numbers', () => {
+  const text = markedItem('practice', '@@', '유형 익히기', '3', '$$');
+  const parsed = parseAnswerKeyText(text);
+  assert.deepEqual(parsed.warnings, []);
+  const [entry] = parsed.entries;
+  assert.equal(entry.number, undefined); assert.equal(entry.sourceQuestionLabel, '유형 익히기');
+  assert.equal(entry.sectionLabel, '$$강 · @@쪽'); assert.equal(entry.sourcePage, undefined);
+  const question = { number: 19, sourceItemId: 'practice', sourceQuestionLabel: '유형 익히기', sectionLabel: '$$강 · @@쪽' };
+  assert.equal(previewAnswerMatches([question], [entry])[0].status, 'matched');
+  assert.equal(previewAnswerMatches([question], [{ id: 'number-only', number: 19, value: '3' }])[0].status, 'unmatched');
+  for (const change of [{ number: 19 }, { sourceQuestionLabel: '다른 예제' }]) assert.equal(previewAnswerMatches([question], [{ ...entry, ...change }])[0].status, 'conflict');
+  assert.equal(previewAnswerMatches([question], [{ id: 'code-only', sourceItemId: 'practice', value: '3' }])[0].status, 'matched');
+  const csv = parseAnswerKeyText('문항 코드,원본 문항 번호,원본 문항 라벨,정답\npractice,,유형 익히기,3\ninvalid,19,유형 익히기,3', { format: 'csv' });
+  assert.equal(csv.entries.length, 1); assert.equal(csv.warnings.length, 1);
+  assert.equal(previewAnswerMatches([question], csv.entries)[0].status, 'matched');
+});
+
 test('related curriculum keys cannot identify an elective answer as the actual source subject', () => {
   const question = { number: 23, sectionLabel: '기하', examSubject: { label: '수학', subjectKeys: ['고등학교|수학', '고등학교|미적분Ⅰ', '고등학교|미적분Ⅱ', '고등학교|기하'] } };
   const entry = { id: 'a', number: 23, value: '3', subject: '미적분Ⅰ' };

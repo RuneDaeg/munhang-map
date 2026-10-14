@@ -1,5 +1,6 @@
 import type { AnalyzedQuestion } from './pdf-analysis';
 import { normalizeQuestionText } from './math-normalization';
+import { readBookSourceMetadata } from './book-metadata';
 
 type Context = Pick<
   AnalyzedQuestion,
@@ -9,6 +10,8 @@ type Context = Pick<
   | 'mappingReason'
   | 'validationFlags'
   | 'sourceQuestionNumber'
+  | 'sourceQuestionLabel'
+  | 'sourceBookMetadata'
   | 'sectionLabel'
   | 'answer'
   | 'answerSource'
@@ -65,8 +68,14 @@ export function readQuestionContext(
   }
   if (Number.isInteger(value.sourceQuestionNumber) && Number(value.sourceQuestionNumber) >= 1 && Number(value.sourceQuestionNumber) <= 10000)
     result.sourceQuestionNumber = Number(value.sourceQuestionNumber);
+  if (value.sourceQuestionLabel !== undefined) {
+    if (typeof value.sourceQuestionLabel !== 'string' || !/^[\p{L}][^#<>\p{Cc}\p{Cf}\uE000-\uF8FF\uFFFD]{0,79}$/u.test(value.sourceQuestionLabel)) throw new Error('도서 원문 문항 라벨이 올바르지 않습니다.');
+    if (result.sourceQuestionNumber !== undefined) throw new Error('원본 문항 번호와 비숫자 라벨이 함께 지정되어 있습니다.');
+    result.sourceQuestionLabel = value.sourceQuestionLabel;
+  }
+  if (value.sourceBookMetadata !== undefined) result.sourceBookMetadata = readBookSourceMetadata(value.sourceBookMetadata);
   if (typeof value.sectionLabel === 'string' && value.sectionLabel.trim())
-    result.sectionLabel = value.sectionLabel.replace(/[\r\n\t]/g, ' ').trim().slice(0, 100);
+    result.sectionLabel = value.sectionLabel.replace(/[\r\n\t]/g, ' ').trim().slice(0, 200);
   if (
     typeof value.assessmentText === 'string' &&
     value.assessmentText.length <= 200000
@@ -108,6 +117,6 @@ export function readQuestionContext(
 }
 
 /** User-facing identity, distinct from the unique internal/API selection id. */
-export function questionLabel(question: { number: number; sourceQuestionNumber?: number; sectionLabel?: string }): string {
-  return `${question.sectionLabel ? `${question.sectionLabel} · ` : ''}${question.sourceQuestionNumber ?? question.number}번`;
+export function questionLabel(question: { number: number; sourceQuestionNumber?: number; sourceQuestionLabel?: string; sectionLabel?: string }): string {
+  return `${question.sectionLabel ? `${question.sectionLabel} · ` : ''}${question.sourceQuestionLabel || `${question.sourceQuestionNumber ?? question.number}번`}`;
 }

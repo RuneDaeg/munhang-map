@@ -99,6 +99,14 @@ const proseSymbols: Record<string, string> = {
 };
 
 function appendProse(parts: MathPart[], text: string) {
+  // An unmatched delimiter means this span is still being edited or its
+  // boundaries are damaged. Promoting a bare \frac inside it would manufacture
+  // nested dollars ($$\frac...$), making later calls less recoverable. Keep the
+  // source intact so the delimiter/outside-math checks can report the problem.
+  if (/(?<!\\)\$/.test(maskChoiceCurrency(text))) {
+    if (text) parts.push({ text, math: false, display: false });
+    return;
+  }
   // Promote only a complete, known argument-taking command to math. Never
   // guess at partial edits or treat an arbitrary backslash command as HTML.
   const commands = /(?<!\\)\\(frac|dfrac|tfrac|binom|sqrt|vec|hat|overline|lim|sum|prod|int|sin|cos|tan|log|ln|exp|min|max)(?![A-Za-z])/g;

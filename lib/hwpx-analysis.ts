@@ -3,9 +3,10 @@ import type { AnalyzedQuestion, StandardRecord } from './pdf-analysis';
 import { detectExamSubject } from './exam-subject';
 import { normalizeQuestionText } from './math-normalization';
 import { sourceBasename } from './question-context';
+import { bookMetadataLine, parseBookMetadata, type BookSourceMetadata } from './book-metadata';
 
-type Group = { number: number; label?: string; code?: string; body: HwpxBlock[]; answer: HwpxBlock[]; explanation: HwpxBlock[] };
-const emptyGroup = (number: number, label?: string, code?: string): Group => ({ number, label, code, body: [], answer: [], explanation: [] });
+type Group = { number?: number; sourceQuestionLabel?: string; sourceBookMetadata?: BookSourceMetadata; label?: string; code?: string; body: HwpxBlock[]; answer: HwpxBlock[]; explanation: HwpxBlock[] };
+const emptyGroup = (number?: number, label?: string, code?: string): Group => ({ number, label, code, body: [], answer: [], explanation: [] });
 const join = (blocks: HwpxBlock[]) => blocks.map(block => block.text).join('\n').trim();
 const plain = (blocks: HwpxBlock[]) => blocks.map(block => block.plainText).join('\n').trim();
 
@@ -20,7 +21,7 @@ function imagesIn(blocks: HwpxBlock[]): Set<string> {
 
 /** Only explicit book delimiters, never subject matter or expected answers. */
 function markedBook(blocks: HwpxBlock[]): Group[] | undefined {
-  if (!blocks.some(block => /#문항코드(?:\s|$)/.test(block.plainText))) return undefined;
+  if (!blocks.some(block => bookMetadataLine.test(block.plainText) || /#문항코드(?:\s|$)/.test(block.plainText))) return undefined;
   const groups: Group[] = [];
   let group: Group | undefined;
   let stage: 'body' | 'answer' | 'explanation' | undefined;
@@ -33,14 +34,12 @@ function markedBook(blocks: HwpxBlock[]): Group[] | undefined {
   };
   for (const block of blocks) {
     const text = block.plainText.trim();
-    if (/^#강\s+/.test(text) && /#문항코드\s+/.test(text)) {
+    if (bookMetadataLine.test(text)) {
       finish();
-      const unit = /#강\s+(\S+)/.exec(text)?.[1];
-      const page = /#쪽\s+(\d+)(?=\s|$)/.exec(text)?.[1];
-      const number = /#번\s+(\d+)(?=\s|$)/.exec(text)?.[1];
-      const code = /#문항코드\s+([^\s#]+)/.exec(text)?.[1];
-      if (!number || !code || code.length > 200 || Number(number) < 1 || Number(number) > 10000) throw new Error('도서의 문항 번호·고유 코드 정보를 확인해 주세요.');
-      group = emptyGroup(Number(number), [unit && `${unit}강`, page && `${page}쪽`].filter(Boolean).join(' · ') || undefined, code);
+      const metadata = parseBookMetadata(text);
+      if (!metadata) throw new Error('도서의 문항 번호·원문 라벨·고유 코드 정보를 확인해 주세요. #강 또는 #구분과 #번·#문항코드가 필요합니다.');
+      group = { ...emptyGroup(metadata.number, metadata.sectionLabel, metadata.sourceItemId),
+        sourceQuestionLabel: metadata.sourceQuestionLabel, sourceBookMetadata: metadata.sourceBookMetadata };
       stage = undefined; started = false; answered = false;
       continue;
     }
@@ -121,7 +120,8 @@ export function extractHwpxQuestions(document: HwpxImportDocument, fingerprint: 
       answer && !validAnswer ? '정답을 안전하게 읽지 못했습니다. 원문 [정답/모범답안]을 확인하세요.' : '',
     ].filter(Boolean);
     return {
-      number: index + 1, sourceQuestionNumber: group.number, sectionLabel: group.label,
+      number: index + 1, sourceQuestionNumber: group.number, sourceQuestionLabel: group.sourceQuestionLabel,
+      sourceBookMetadata: group.sourceBookMetadata, sectionLabel: group.label,
       sourceItemId: group.code, sourceFormat: 'hwpx', sourceFingerprint: fingerprint,
       type: `HWPX 구조 추출${group.code ? ` · ${group.code}` : ''}`, text,
       standardCode: '', standard: '', domain: '', confidence: 0,

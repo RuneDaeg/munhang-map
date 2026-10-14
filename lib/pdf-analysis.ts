@@ -11,6 +11,7 @@ import { imageTextStructures } from './pdf-raster-structures';
 import type { PdfStructure } from './pdf-structures';
 import { normalizeQuestionText } from './math-normalization';
 import { scienceAssessmentScope } from './science-assessment';
+import type { BookSourceMetadata } from './book-metadata';
 
 export type StandardCandidate = {
   code: string;
@@ -30,6 +31,9 @@ export type AnalyzedQuestion = {
   number: number;
   /** Unique internal number stays stable; elective booklets may repeat 23–30. */
   sourceQuestionNumber?: number;
+  /** Non-numeric publisher label, never replaced by the internal selection id. */
+  sourceQuestionLabel?: string;
+  sourceBookMetadata?: BookSourceMetadata;
   sectionLabel?: string;
   type: string;
   text: string;

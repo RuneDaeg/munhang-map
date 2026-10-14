@@ -39,7 +39,24 @@ function questionSnapshot(value, fileName) {
     }
   }
   if (Number.isInteger(value.sourceQuestionNumber) && value.sourceQuestionNumber >= 1 && value.sourceQuestionNumber <= 10000) question.sourceQuestionNumber = value.sourceQuestionNumber;
-  if (typeof value.sectionLabel === 'string' && value.sectionLabel.trim()) question.sectionLabel = value.sectionLabel.replace(/[\r\n\t]/g, ' ').trim().slice(0, 100);
+  if (value.sourceQuestionLabel !== undefined) {
+    if (typeof value.sourceQuestionLabel !== 'string' || !/^[\p{L}][^#<>\p{Cc}\p{Cf}\uE000-\uF8FF\uFFFD]{0,79}$/u.test(value.sourceQuestionLabel)) throw new Error('도서 원문 문항 라벨이 올바르지 않습니다.');
+    if (question.sourceQuestionNumber !== undefined) throw new Error('원본 문항 번호와 비숫자 라벨이 함께 지정되어 있습니다.');
+    question.sourceQuestionLabel = value.sourceQuestionLabel;
+  }
+  if (value.sourceBookMetadata !== undefined) {
+    const metadata = value.sourceBookMetadata;
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) throw new Error('도서 원문 식별정보가 올바르지 않습니다.');
+    const safe = {};
+    for (const key of ['unit', 'category', 'page', 'questionLabel']) {
+      if (metadata[key] === undefined) continue;
+      if (typeof metadata[key] !== 'string' || !metadata[key].length || metadata[key].length > 80 || /[#<>\p{Cc}\p{Cf}\uE000-\uF8FF\uFFFD]/u.test(metadata[key])) throw new Error('도서 원문 식별정보가 올바르지 않습니다.');
+      safe[key] = metadata[key];
+    }
+    if (!safe.questionLabel || !!safe.unit === !!safe.category) throw new Error('도서 원문 단원·문항 라벨이 올바르지 않습니다.');
+    question.sourceBookMetadata = safe;
+  }
+  if (typeof value.sectionLabel === 'string' && value.sectionLabel.trim()) question.sectionLabel = value.sectionLabel.replace(/[\r\n\t]/g, ' ').trim().slice(0, 200);
   for (const key of ['type', 'text', 'standardCode', 'standard', 'domain']) {
     if (typeof value[key] !== 'string' || value[key].length > (key === 'text' ? 200000 : 3000)) throw new Error('문항 텍스트 또는 성취기준이 올바르지 않습니다.');
     question[key] = value[key];
@@ -105,7 +122,7 @@ function createQuestionBank(directory) {
   }
   function writeRecord(record) {
     if (Buffer.byteLength(JSON.stringify(record)) > 80000000) throw new Error('한 원본 파일의 저장 크기는 80MB 이하로 제한됩니다.');
-    const summary = { items: record.items.map(({ id, savedAt, question }) => ({ id, sourceFileName: record.sourceFileName, savedAt, number: question.number, sourceQuestionNumber: question.sourceQuestionNumber, sectionLabel: question.sectionLabel, standardCode: question.standardCode, domain: question.domain, text: question.text.slice(0, 500), confidence: question.confidence })) };
+    const summary = { items: record.items.map(({ id, savedAt, question }) => ({ id, sourceFileName: record.sourceFileName, savedAt, number: question.number, sourceQuestionNumber: question.sourceQuestionNumber, sourceQuestionLabel: question.sourceQuestionLabel, sectionLabel: question.sectionLabel, standardCode: question.standardCode, domain: question.domain, text: question.text.slice(0, 500), confidence: question.confidence })) };
     atomicWrite(recordPath(record.sourceId), `${JSON.stringify(summary)}\n${JSON.stringify(record)}`);
   }
   function getItem(id) {

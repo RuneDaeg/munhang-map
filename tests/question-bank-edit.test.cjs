@@ -3,7 +3,7 @@ require('./load-typescript.cjs');
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { createQuestionBank } = require('../local/question-bank.cjs');
-const { questionStorageProblem } = require('../lib/question-storage-check.ts');
+const { questionStorageProblem, assertQuestionsStorable } = require('../lib/question-storage-check.ts');
 const { saveToQuestionBank, loadBankItem, updateBankItem } = require('../lib/question-bank.ts');
 const image = 'data:image/jpeg;base64,/9j/2Q==';
 const q = { number: 1, type: 'test', text: '$x^2$', standardCode: '[manual]', standard: '교사 선택', domain: '수학', confidence: 80,
@@ -64,6 +64,35 @@ test('browser save and edit reject invalid math before sending any request', asy
   await assert.rejects(saveToQuestionBank('exam.pdf', [{ ...q, text: '$x^{2$' }], ['private page']), /1번/);
   await assert.rejects(updateBankItem({ id: 'x', revision: 'y', question: q }, '$x^{2$'), /1번/);
   assert.equal(calls, 0);
+});
+test('new saves validate explanation math before any request, with the exact question and stage', async t => {
+  const original = global.fetch; t.after(() => { global.fetch = original; });
+  let calls = 0; global.fetch = async () => { calls++; throw Error('must not call'); };
+  const question = { ...q, number: 17, explanation: String.raw`해설 $\notACommand{x}$` };
+  const before = JSON.stringify(question);
+  await assert.rejects(saveToQuestionBank('exam.pdf', [question], ['private page']), /17번 해설:/);
+  assert.equal(calls, 0);
+  assert.equal(JSON.stringify(question), before);
+  assert.throws(() => assertQuestionsStorable([{ ...question, text: '$x^{2$' }]), /1문항[\s\S]*17번:[\s\S]*17번 해설:/);
+});
+test('valid, absent and explicitly preserved native explanations remain storable', () => {
+  const native = '[한글 수식: MATRIX {a_{1} & b^{2} # c & d}]';
+  for (const explanation of [undefined, '', '   ', String.raw`해설 $\frac12$`, `해설 ${native} 다음 $x^2$`]) {
+    assert.doesNotThrow(() => assertQuestionsStorable([{ ...q, explanation }]));
+  }
+  assert.throws(() => assertQuestionsStorable([{ ...q, explanation: `${native} x^{2}` }]), /1번 해설:/);
+});
+test('body-only correction preserves an existing legacy explanation rather than making it uneditable', async t => {
+  const original = global.fetch; t.after(() => { global.fetch = original; });
+  const entry = { id: 'legacy', revision: 'same', question: { ...q, text: '$x^{2$', explanation: '$unknown^{broken$' } };
+  global.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    assert.deepEqual(body, { id: 'legacy', revision: 'same', text: '$x^2$' });
+    return Response.json({ ...entry, question: { ...entry.question, text: body.text } });
+  };
+  const updated = await updateBankItem(entry, '$x^2$');
+  assert.equal(updated.question.explanation, entry.question.explanation);
+  assert.equal(updated.question.text, '$x^2$');
 });
 test('client edit reads legacy broken math and sends only text, ID and revision after correction', async t => {
   const original = global.fetch; t.after(() => { global.fetch = original; });

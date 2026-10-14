@@ -1,4 +1,5 @@
 import { formatRuns, type TextRun } from './text-formatting';
+import { hwpxViewBox } from './hwpx-layout';
 
 /** This reader extracts document structure, not Hancom's pagination or rendering. */
 export type HwpxInline =
@@ -13,10 +14,13 @@ export type HwpxParagraph = {
 export type HwpxTableCell = {
   row: number; column: number; rowSpan: number; colSpan: number;
   blocks: HwpxBlock[]; text: string; plainText: string;
+  borderFillIDRef?: string;
+  borders?: { left: boolean; right: boolean; top: boolean; bottom: boolean };
 };
 export type HwpxBlock = HwpxParagraph | {
   kind: 'table'; rows: number; columns: number; cells: HwpxTableCell[];
   text: string; plainText: string;
+  presentation?: { kind: 'box'; title: string; reason: 'layout-view' };
 };
 export type HwpxImage = { id: string; path: string; mimeType: string; dataUrl: string };
 export type HwpxImportDocument = {
@@ -28,7 +32,9 @@ export type HwpxImportDocument = {
 
 const LIMIT = {
   archive: 64 * 1024 * 1024, entry: 32 * 1024 * 1024,
-  expanded: 256 * 1024 * 1024, xml: 16 * 1024 * 1024,
+  // Large legitimate books can have a 17+ MiB section. Keep the per-entry,
+  // aggregate, inflation-ratio, node, depth and cell limits independently.
+  expanded: 256 * 1024 * 1024, xml: 24 * 1024 * 1024,
   entries: 2048, nodes: 500_000, depth: 96, cells: 4096,
 };
 function fail(detail: string): never { throw new Error(`HWPX 파일을 읽을 수 없습니다: ${detail}`); }
@@ -275,32 +281,58 @@ const MATH_SYMBOLS: Record<string, string> = {
   rarrow: '\\to', larrow: '\\leftarrow', lrarrow: '\\leftrightarrow',
   RARROW: '\\Rightarrow', LARROW: '\\Leftarrow', LRARROW: '\\Leftrightarrow',
   CDOTS: '\\cdots', LDOTS: '\\ldots', VDOTS: '\\vdots', DDOTS: '\\ddots',
-  prime: '\\prime', DEG: '{}^{\\circ}', ANGLE: '\\angle', BOT: '\\perp',
+  prime: '\\prime', DEG: '{}^{\\circ}', CENTIGRADE: '{}^{\\circ}\\mathrm{C}', ANGLE: '\\angle', BOT: '\\perp', BULLET: '\\bullet', AST: '\\ast', '*': '\\ast',
   TRIANGLE: '\\triangle',
   THEREFORE: '\\therefore', '＝': '=', '＋': '+', '－': '-', '–': '-',
   '·': '\\cdot', '˚': '{}^{\\circ}',
 };
-for (const name of 'alpha beta gamma delta epsilon varepsilon zeta eta theta vartheta iota kappa lambda mu nu xi pi varpi rho sigma varsigma tau upsilon phi varphi chi psi omega'.split(' ')) MATH_SYMBOLS[name] = `\\${name}`;
-for (const name of 'GAMMA DELTA THETA LAMBDA XI PI SIGMA UPSILON PHI PSI OMEGA'.split(' ')) MATH_SYMBOLS[name] = `\\${name[0]}${name.slice(1).toLowerCase()}`;
+const LOWER_GREEK = 'alpha beta gamma delta epsilon varepsilon zeta eta theta vartheta iota kappa lambda mu nu xi pi varpi rho sigma varsigma tau upsilon phi varphi chi psi omega'.split(' ');
+const UPPER_GREEK = 'GAMMA DELTA THETA LAMBDA XI PI SIGMA UPSILON PHI PSI OMEGA'.split(' ');
+const GREEK_SYMBOLS = new Set([...LOWER_GREEK, ...UPPER_GREEK]);
+for (const name of LOWER_GREEK) MATH_SYMBOLS[name] = `\\${name}`;
+for (const name of UPPER_GREEK) MATH_SYMBOLS[name] = `\\${name[0]}${name.slice(1).toLowerCase()}`;
 const MATH_FUNCTIONS = new Set('sin cos tan cot sec csc arcsin arccos arctan sinh cosh tanh coth log ln exp max min lim det gcd mod arg dim ker'.split(' '));
 const MATH_ACCENTS: Record<string, string> = { BAR: 'overline', VEC: 'vec', HAT: 'hat', DOT: 'dot', DDOT: 'ddot', TILDE: 'tilde', UNDER: 'underline' };
 const MATH_FONTS: Record<string, string> = { rm: 'mathrm', it: 'mathit', bold: 'boldsymbol', rmbold: 'mathbf' };
 // Common adjacent variable/unit letters. Only this explicit subset is split;
 // unknown word-like native commands remain unconverted.
 const MATH_LETTERS = new Set('xy mv mg mgh mgd mgH mgx hc mE kL gh hf kg cm vt kd ct gd at ma Fd kx km al mal vx Ft aL kF eV hv pv He MeV Me Li Ba Kr Hz PQ BC AC QS BS'.split(' '));
+// Roman font declarations are lexical scope, not permission to accept an
+// arbitrary native command as text. Accept bounded element sequences and a
+// small vocabulary of units/state labels, preserving case and atom counts.
+const CHEMICAL_ELEMENTS = new Set('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe Cs Ba La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf Ta W Re Os Ir Pt Au Hg Tl Pb Bi Po At Rn Fr Ra Ac Th Pa U Np Pu Am Cm Bk Cf Es Fm Md No Lr Rf Db Sg Bh Hs Mt Ds Rg Cn Nh Fl Mc Lv Ts Og A X Z D T'.split(' '));
+const ROMAN_LABELS = new Set('mol mmol kmol atm Pa kPa MPa hPa mmHg mL dL kg mg cm mm nm km ms min MeV keV eV Hz kHz MHz kJ J W kW N m s g L K V A C cal kcal aq pH pOH ATP ADP AMP NAD NADP NADH NADPH FAD FADH DNA RNA'.split(' '));
+const UNSUPPORTED_MATH_COMMANDS = new Set('BOX ROOT MATRIX PMATRIX BMATRIX DMATRIX CASES PILE LPILE RPILE EQALIGN ATOP CHOOSE COLOR PHANTOM'.split(' '));
+const romanLiteral = (token: string) => {
+  if (UNSUPPORTED_MATH_COMMANDS.has(token.toUpperCase())) return false;
+  if (ROMAN_LABELS.has(token) || /^[A-Za-z]$/.test(token)) return true;
+  const atoms = token.match(/[A-Z][a-z]?/g);
+  return !!atoms && atoms.length <= 6 && atoms.join('') === token && atoms.every((item) => CHEMICAL_ELEMENTS.has(item));
+};
+const scriptBaseToken = (token: string) => token === '{' || token === 'LEFT'
+  || /^[A-Za-z]$|^\d+(?:\.\d+)?$/.test(token) || MATH_LETTERS.has(token)
+  || MATH_FUNCTIONS.has(token) || GREEK_SYMBOLS.has(token)
+  || ['SUM', 'PROD', 'INT', 'DINT', 'TINT', 'OINT', 'UNION', 'INTER', ')', ']'].includes(token);
 
 /** Explicit native-equation subset. Unknown commands preserve the source, never guess. */
 export function hwpxEquationToLatex(script: string): string | undefined {
   if (!script.trim() || script.length > 20_000) return undefined;
   const tokens: string[] = [];
-  const scan = /\s+|"[^"\r\n]*"|[A-Za-z]+|[0-9]+(?:\.[0-9]+)?|!=|\+-|-\+|<=|>=|[{}_^()+\-=/.,:;!?<>|[\]`~]|[\u0080-\uffff]/gy;
+  const scan = /\s+|"[^"\r\n]*"|[A-Za-z]+|[0-9]+(?:\.[0-9]+)?|!=|\+-|-\+|<=|>=|[{}_^*()+\-=/.,:;!?<>|[\]`~]|[\u0080-\uffff]/gy;
   let at = 0;
   while (at < script.length) {
     scan.lastIndex = at;
     const match = scan.exec(script);
     if (!match) return undefined;
     at = scan.lastIndex;
-    if (!/^\s+$/.test(match[0])) tokens.push(match[0]);
+    if (!/^\s+$/.test(match[0])) {
+      const token = match[0];
+      // Hancom permits adjacent font switches (rmNaCl, itaq), but an unknown
+      // word such as rmMATRIX must not become harmless-looking roman letters.
+      const fontWord = /^(rmbold|bold|rm|it)([A-Za-z]+)$/.exec(token);
+      if (fontWord && romanLiteral(fontWord[2])) tokens.push(fontWord[1], fontWord[2]);
+      else tokens.push(token);
+    }
     if (tokens.length > 4000) return undefined;
   }
   let position = 0, depth = 0;
@@ -309,16 +341,54 @@ export function hwpxEquationToLatex(script: string): string | undefined {
     if (++depth > 64) return bad();
     const parts: string[] = [];
     let font = inheritedFont;
-    let previousCompound = false, previousSpacing = false;
+    let previousCompound = false, previousSpacing = false, previousScriptBase = false, previousRomanChemical = false;
     const scripts = new Set<string>();
+    let leftBase = '', leftSub = '', leftSup = '';
     while (position < tokens.length && tokens[position] !== stop) {
       const token = tokens[position];
       if (token === '}' || token === 'RIGHT') return bad();
       if (/^over$/i.test(token)) return bad();
+      if (token === 'LSUB' || token === 'LSUP') {
+        if (!parts.length || !previousScriptBase || previousCompound || previousSpacing || scripts.size || (token === 'LSUB' ? leftSub : leftSup)) return bad();
+        if (!leftBase) leftBase = parts.at(-1)!;
+        if (leftBase === '{}') return bad(); // An empty native anchor is ambiguous.
+        position++;
+        if (tokens[position] !== '{') return bad();
+        const value = atom(font);
+        if (token === 'LSUB') leftSub = value; else leftSup = value;
+        parts[parts.length - 1] = `{}${leftSub ? `_{${leftSub}}` : ''}${leftSup ? `^{${leftSup}}` : ''} ${leftBase}`;
+        continue;
+      }
       if (token === '^' || token === '_') {
-        if (!parts.length || scripts.has(token) || previousCompound || previousSpacing) return bad();
-        const next = tokens[position + 1];
-        if (!next || next !== '{' && !/^[A-Za-z]$|^\d+(?:\.\d+)?$/.test(next) && !Object.hasOwn(MATH_SYMBOLS, next)) return bad();
+        if (!previousScriptBase) {
+          // Native scripts after a binary operator (or at the expression's
+          // beginning) have no right-hand base. A complete numeric pair can
+          // precede the next atom, as in Y + _{0}^{1} rm n. Never attach it to +.
+          if (previousCompound || previousSpacing || scripts.size) return bad();
+          const prefix: Record<string, string> = {};
+          while (tokens[position] === '^' || tokens[position] === '_') {
+            const mark = tokens[position++];
+            if (prefix[mark] || tokens[position] !== '{') return bad();
+            const begin = position;
+            const value = atom('');
+            const raw = tokens.slice(begin + 1, position - 1).join('');
+            if (!/^[+\-−]?\d+$/.test(raw)) return bad();
+            prefix[mark] = value;
+          }
+          if (!prefix._ || !prefix['^']) return bad();
+          while (Object.hasOwn(MATH_FONTS, tokens[position] ?? '')) font = MATH_FONTS[tokens[position++]];
+          const next = tokens[position];
+          if (!next || !/^[A-Za-z]$/.test(next) && !(font === 'mathrm' && romanLiteral(next))) return bad();
+          const base = atom(font);
+          parts.push(`{}_{${prefix._}}^{${prefix['^']}} ${base}`);
+          previousScriptBase = true; leftBase = ''; leftSub = ''; leftSup = '';
+          continue;
+        }
+        if (!parts.length || scripts.has(token) || previousCompound || previousSpacing || leftBase) return bad();
+        const next = tokens[position + 1], after = tokens[position + 2];
+        const terminalCharge = token === '^' && previousRomanChemical && /^[+-]$/.test(next ?? '')
+          && (!after || after === stop || /^[)\]+\-=]$/.test(after) || /^(?:rarrow|larrow|lrarrow)$/.test(after));
+        if (!next || !terminalCharge && next !== '{' && !/^[A-Za-z]$|^\d+(?:\.\d+)?$/.test(next) && !Object.hasOwn(MATH_SYMBOLS, next)) return bad();
         // A lone built-in function in a script (e.g. E_{max}) makes KaTeX
         // emit three MathML children for msub, which cannot round-trip through
         // the document converters. Preserve native source instead of replacing
@@ -336,6 +406,9 @@ export function hwpxEquationToLatex(script: string): string | undefined {
       let value = atom(font);
       previousCompound = /^sqrt$/i.test(token) || Object.hasOwn(MATH_ACCENTS, token);
       previousSpacing = token === '`' || token === '~';
+      previousScriptBase = scriptBaseToken(token) || !!font && romanLiteral(token);
+      previousRomanChemical = font === 'mathrm' && romanLiteral(token);
+      leftBase = ''; leftSub = ''; leftSup = '';
       scripts.clear();
       if (/^over$/i.test(tokens[position] ?? '')) {
         // Hancom's unbraced OVER scope is layout-dependent. Both operands
@@ -388,6 +461,7 @@ export function hwpxEquationToLatex(script: string): string | undefined {
     if (token === '<=') return '\\le';
     if (token === '>=') return '\\ge';
     if (/^[A-Za-z]$|^\d+(?:\.\d+)?$/.test(token)) return font ? `\\${font}{${token}}` : token;
+    if ((font === 'mathrm' || font === 'mathbf' || font === 'mathit') && romanLiteral(token)) return `\\${font}{${token}}`;
     if (MATH_LETTERS.has(token)) return token.split('').map((letter) => font ? `\\${font}{${letter}}` : letter).join(' ');
     if (/^[()+\-=/.,:;!?<>|[\]]$/.test(token)) return token;
     if (/^[가-힣ㄱ-ㅎㅏ-ㅣ①-⑳㉠-㉿Ⅰ-Ⅻ]$/.test(token)) return `\\text{${token}}`;
@@ -484,9 +558,18 @@ export async function parseHwpx(input: ArrayBuffer | Uint8Array | Blob): Promise
   for (const path of allSections) if (!sectionPaths.includes(path)) sectionPaths.push(path);
   if (!sectionPaths.length || sectionPaths.length > 256) fail('본문 구역이 없거나 너무 많습니다.');
   const styles = new Map<string, CharStyle>();
+  const borders = new Map<string, NonNullable<HwpxTableCell['borders']>>();
   const numbering = new Map<string, NonNullable<HwpxParagraph['numbering']>>();
   if (zip.has('Contents/header.xml')) {
     const header = await xml('Contents/header.xml');
+    for (const fill of descendants(header, 'borderFill')) {
+      const sides = ['left', 'right', 'top', 'bottom'] as const;
+      const values = sides.map((side) => child(fill, `${side}Border`));
+      if (values.every((value) => value?.attrs.type)) {
+        borders.set(fill.attrs.id, Object.fromEntries(sides.map((side, index) =>
+          [side, !['NONE', '0'].includes(values[index]!.attrs.type)])) as NonNullable<HwpxTableCell['borders']>);
+      }
+    }
     for (const style of descendants(header, 'charPr')) {
       const underline = child(style, 'underline');
       styles.set(style.attrs.id, { bold: Boolean(child(style, 'bold')), underline: Boolean(underline && !['NONE', '0'].includes(underline.attrs.type ?? 'NONE')) });
@@ -551,9 +634,22 @@ export async function parseHwpx(input: ArrayBuffer | Uint8Array | Blob): Promise
       warnings.add('문단 스타일의 자동 번호는 번호 정보만 보존했습니다. 본문에 없는 문항 번호는 직접 확인해 주세요.');
     const flush = () => {
       if (!runs.length) return;
-      const values = runs.map((run) => run.kind === 'text' ? run
-        : run.kind === 'equation' ? { text: run.latex ? `$${run.latex}$` : `[한글 수식: ${run.script}]`, bold: run.bold, underline: run.underline }
-        : { text: `[삽입 그림: ${run.imageId || '식별자 없음'}]`, ...plainStyle });
+      let trailingBackslashes = 0;
+      const values = runs.map((run) => {
+        // Preserve literal source backslashes without letting a trailing one
+        // escape the generated native-equation opener and shift every $ pair.
+        const boundary = trailingBackslashes % 2 ? ' ' : '';
+        const value = run.kind === 'text' ? run
+          // Native source line breaks are whitespace, not prose/table bounds.
+          // Exact raw scripts stay in runs; visible fallbacks stay one marker.
+          : run.kind === 'equation' ? { text: run.latex ? `${boundary}$${run.latex}$` : `[한글 수식: ${run.script.replace(/\r\n?|\n/g, ' ')}]`, bold: run.bold, underline: run.underline }
+          : { text: `[삽입 그림: ${run.imageId || '식별자 없음'}]`, ...plainStyle };
+        if (value.text) {
+          const tail = /\\+$/.exec(value.text)?.[0].length ?? 0;
+          trailingBackslashes = tail === value.text.length ? trailingBackslashes + tail : tail;
+        }
+        return value;
+      });
       result.push({ kind: 'paragraph', text: formatRuns(values), plainText: values.map((run) => run.text).join(''), runs,
         paragraphId: node.attrs.id, pageBreak: node.attrs.pageBreak === '1', numbering: paragraphNumbering });
       runs = [];
@@ -623,22 +719,27 @@ export async function parseHwpx(input: ArrayBuffer | Uint8Array | Blob): Promise
           occupied.add(key);
         }
         const blocks = parseBlocks(cell, nesting);
-        cells.push({ row, column, rowSpan, colSpan, blocks, text: joinText(blocks), plainText: joinPlain(blocks) });
+        const borderFillIDRef = cell.attrs.borderFillIDRef ?? node.attrs.borderFillIDRef;
+        cells.push({ row, column, rowSpan, colSpan, blocks, text: joinText(blocks), plainText: joinPlain(blocks),
+          borderFillIDRef, borders: borderFillIDRef ? borders.get(borderFillIDRef) : undefined });
         nextColumn = column + colSpan;
       }
     }
     const merged = cells.some((cell) => cell.rowSpan > 1 || cell.colSpan > 1);
     const nested = cells.some((cell) => cell.blocks.some((block) => block.kind === 'table'));
-    if (merged) warnings.add('병합 셀 정보는 보존했지만 편집 본문의 표에서는 병합 모양을 재현하지 못합니다. 원문과 대조해 주세요.');
+    const viewBox = hwpxViewBox(cells);
+    if (merged && !viewBox) warnings.add('병합 셀 정보는 보존했지만 편집 본문의 표에서는 병합 모양을 재현하지 못합니다. 원문과 대조해 주세요.');
+    if (viewBox) warnings.add('보기 표의 투명 배치 셀을 하나의 보기 상자로 정리했습니다. 원본 셀·문자·수식 정보는 보존했습니다.');
     if (nested || rows > 80 || columns > 16) warnings.add('중첩 표 또는 큰 표는 셀별 텍스트로 표시했습니다. 원문과 대조해 주세요.');
     const grid = Array.from({ length: rows }, () => Array.from({ length: columns }, () => ''));
     for (const cell of cells) grid[cell.row][cell.column] = cell.text;
-    const text = nested || rows > 80 || columns > 16
+    const text = viewBox ? `:::box ${viewBox.title}\n${viewBox.text}\n:::` : nested || rows > 80 || columns > 16
       ? cells.map((cell) => `[표 ${cell.row + 1}행 ${cell.column + 1}열]\n${cell.text}`).join('\n')
       : `:::table\n${grid.map((row) => `| ${row.map((value) => value.replace(/\r\n?/g, '\n').replace(/\n/g, '<br>').replace(/\|/g, '\\|')).join(' | ')} |`).join('\n')}\n:::`;
     const plainGrid = Array.from({ length: rows }, () => Array.from({ length: columns }, () => ''));
     for (const cell of cells) plainGrid[cell.row][cell.column] = cell.plainText;
-    return { kind: 'table', rows, columns, cells, text, plainText: plainGrid.map((row) => row.join('\t')).join('\n') };
+    return { kind: 'table', rows, columns, cells, text, plainText: plainGrid.map((row) => row.join('\t')).join('\n'),
+      ...(viewBox ? { presentation: { kind: 'box' as const, title: viewBox.title, reason: 'layout-view' as const } } : {}) };
   };
   const sections: HwpxImportDocument['sections'] = [];
   for (const [index, path] of sectionPaths.entries()) {

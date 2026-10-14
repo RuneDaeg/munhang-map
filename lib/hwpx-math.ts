@@ -26,9 +26,9 @@ const SYMBOLS: Record<string, string> = {
   '↑': 'uparrow', '↓': 'downarrow', '↦': 'MAPSTO', '↪': 'HOOKRIGHT', '↩': 'HOOKLEFT',
   '∑': 'SUM', '∏': 'PROD', '∐': 'COPROD', '∫': 'INT', '∬': 'DINT', '∭': 'TINT',
   '∮': 'OINT', '∯': 'ODINT', '∰': 'OTINT', '⋃': 'UNION', '⋂': 'INTER',
-  '⊕': 'OPLUS', '⊗': 'OTIMES', '⊙': 'ODOT', '∘': 'CIRC', '•': 'BULLET', '∗': 'AST',
+  '⊕': 'OPLUS', '⊗': 'OTIMES', '⊙': 'ODOT', '∘': 'CIRC', '•': 'BULLET', '∙': 'BULLET', '∗': 'AST',
   '⋯': 'CDOTS', '…': 'LDOTS', '⋮': 'VDOTS', '⋱': 'DDOTS', '′': 'prime', '″': 'prime prime',
-  '°': 'DEG', '℃': 'CENTIGRADE', 'ℏ': 'hbar', 'ℓ': 'LITER', 'ℵ': 'ALEPH', '∠': 'ANGLE',
+  '°': 'DEG', '℃': 'CENTIGRADE', 'ℏ': 'hbar', 'ℓ': 'LITER', 'ℵ': 'ALEPH', '∠': 'ANGLE', '△': 'TRIANGLE',
   'α': 'alpha', 'β': 'beta', 'γ': 'gamma', 'δ': 'delta', 'ϵ': 'epsilon', 'ε': 'varepsilon',
   'ζ': 'zeta', 'η': 'eta', 'θ': 'theta', 'ϑ': 'vartheta', 'ι': 'iota', 'κ': 'kappa',
   'λ': 'lambda', 'μ': 'mu', 'ν': 'nu', 'ξ': 'xi', 'ο': 'omicron', 'π': 'pi', 'ϖ': 'varpi',
@@ -173,7 +173,14 @@ function row(list: Node[], style: Style): Part {
     const node = list[index];
     // TeX isotope notation {}^{14}_{6}C attaches the scripts on C's left.
     if (['msub', 'msup', 'msubsup'].includes(node.tag) && children(node)[0]?.tag === 'mrow' && !children(node)[0].children.length) {
-      const fields = args(node, node.tag === 'msubsup' ? 3 : 2), next = list[++index];
+      const fields = args(node, node.tag === 'msubsup' ? 3 : 2);
+      // A degree mark has an intentionally empty base and no subscript. It
+      // belongs to the preceding angle/temperature, never to the following C
+      // as a nuclear prescript; standalone degree marks are also valid.
+      if (node.tag === 'msup' && /^[∘°]$/.test(content(fields[1]))) {
+        items.push(part('DEG', 0.4, 0.8, 0.2)); continue;
+      }
+      const next = list[++index];
       if (!next || next.tag === 'mo') fail('왼쪽 첨자의 본문이 없습니다');
       const base = convert(next, style), sub = node.tag === 'msup' ? undefined : convert(fields[1], style), sup = node.tag === 'msub' ? undefined : convert(fields.at(-1)!, style);
       items.push(scripted(base, sub, sup, true));

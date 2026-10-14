@@ -3,6 +3,8 @@ require('./load-typescript.cjs');
 const test = require('node:test'), assert = require('node:assert/strict');
 const { extractHwpxQuestions } = require('../lib/hwpx-analysis.ts');
 const { serializeReview, parseReview } = require('../lib/review-file.ts');
+const { parseAnswerKeyText, previewAnswerMatches } = require('../lib/answer-key.ts');
+const { questionLabel } = require('../lib/question-context.ts');
 
 // All content is invented. These fixtures describe the parser's public block
 // structure without retaining a teacher's book, answer key, or other files.
@@ -57,6 +59,43 @@ test('different unique book codes preserve repeated original numbers and reset s
   assert.deepEqual(questions.map(q => q.sourceItemId), ['SYNTH-001', 'SYNTH-002']);
   assert.ok(questions.every(q => !q.analysisWarning)); assert.doesNotMatch(questions[0].text, /둘째/);
   assert.throws(() => extract([...bookQuestion('SYNTH-001'), ...bookQuestion('SYNTH-001')]), /중복 문항 코드/);
+});
+
+test('book category markers, literal placeholders and named exercises share answer identity without invented numbers', async () => {
+  const fixtures = [
+    ['#구분 01 #쪽 005 #번 001 #문항코드 SYNTH-CATEGORY', 1, undefined, '구분 01 · 005쪽', { category: '01', page: '005', questionLabel: '001' }],
+    ['#강 $$ #쪽 @@ #번 008 #문항코드 SYNTH-PLACEHOLDER', 8, undefined, '$$강 · @@쪽', { unit: '$$', page: '@@', questionLabel: '008' }],
+    ['#강 02 #쪽 020 #번 유형 익히기 #문항코드 SYNTH-PRACTICE', undefined, '유형 익히기', '02강 · 020쪽', { unit: '02', page: '020', questionLabel: '유형 익히기' }],
+  ];
+  const blocks = fixtures.flatMap(([header]) => [paragraph(header), paragraph('[문제]'), paragraph('합성 문제입니다.'), paragraph('[정답/모범답안]'), paragraph('③'), paragraph('[해설]'), paragraph('합성 해설입니다.')]);
+  const questions = extract(blocks);
+  assert.deepEqual(questions.map(q => q.number), [1, 2, 3]);
+  fixtures.forEach(([, number, label, section, metadata], index) => {
+    assert.equal(questions[index].sourceQuestionNumber, number);
+    assert.equal(questions[index].sourceQuestionLabel, label);
+    assert.equal(questions[index].sectionLabel, section);
+    assert.deepEqual(questions[index].sourceBookMetadata, metadata);
+  });
+  assert.equal(questionLabel(questions[2]), '02강 · 020쪽 · 유형 익히기');
+  const parsed = parseAnswerKeyText(blocks.map(b => b.plainText).join('\n'));
+  assert.deepEqual(parsed.warnings, []);
+  assert.deepEqual(previewAnswerMatches(questions, parsed.entries).map(m => m.status), ['matched', 'matched', 'matched']);
+  assert.equal(parsed.entries[1].sourcePage, undefined, 'literal page placeholder is not guessed');
+  const restored = (await parseReview(serializeReview('synthetic.hwpx', questions, []))).questions;
+  restored.forEach((q, index) => {
+    assert.equal(q.sourceQuestionLabel, questions[index].sourceQuestionLabel);
+    assert.deepEqual(q.sourceBookMetadata, questions[index].sourceBookMetadata);
+  });
+});
+
+test('book metadata rejects duplicate, unknown and mismatched markers rather than merging the next question', () => {
+  for (const header of [
+    '#강 01 #구분 02 #쪽 006 #번 001 #문항코드 SYNTH',
+    '#구분 01 #쪽 006 #번 001 #번 002 #문항코드 SYNTH',
+    '#강 01 #쪽 006 #번 001 #문항코드 SYNTH #정답 3',
+    '#강 01 #쪽 006 #번 001x #문항코드 SYNTH',
+    '#구분 01 #쪽 006 #번 #문항코드 SYNTH',
+  ]) assert.throws(() => extract([...bookQuestion('GOOD'), paragraph(header), paragraph('[문제]'), paragraph('합성 문항'), paragraph('[정답/모범답안]'), paragraph('③')]), /문항|원문|고유 코드/);
 });
 
 test('general numbered HWPX uses numbered paragraphs and elective labels without splitting data tables', () => {
