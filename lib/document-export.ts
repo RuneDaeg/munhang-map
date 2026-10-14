@@ -2,7 +2,7 @@ import type { AnalyzedQuestion } from './pdf-analysis';
 import { hasHwpxIdentity, questionLabel, readSourceImages, sourceBasename } from './question-context';
 import { questionPlainText } from './question-content';
 import { docxQuestionContent, hwpxQuestionContent, prepareHwpxTableStyles } from './table-export';
-import { prepareHwpxTextStyles } from './hwpx-text-styles';
+import { prepareHwpxParagraphStyles, prepareHwpxTextStyles } from './hwpx-text-styles';
 import { textRuns, unformattedText } from './text-formatting';
 import { referencedSourceImageIds, splitSourceImageMarkers } from './source-image-markers';
 import { hasUnbalancedMathDelimiters, splitMathText } from './math-normalization';
@@ -259,7 +259,8 @@ export function createHwpxBytesFromTemplate(title: string, questions: AnalyzedQu
   const baseContent = decoder.decode(requiredTemplatePart(template, 'Contents/content.hpf'));
   const images = collectPageImages(questions);
   const textStyles = prepareHwpxTextStyles(decoder.decode(requiredTemplatePart(template, 'Contents/header.xml')));
-  const tableStyles = {...prepareHwpxTableStyles(textStyles.header),runs:textStyles.runs};
+  const paragraphStyles = prepareHwpxParagraphStyles(textStyles.header);
+  const tableStyles = {...prepareHwpxTableStyles(paragraphStyles.header),runs:textStyles.runs,keepNextParaPr:paragraphStyles.keepNextParaPr};
   const section = makeHwpxSection(baseSection, title, questions, images, tableStyles, options);
   const imageManifest = images.unique.map((image) => `<opf:item id="${image.itemId}" href="BinData/${image.fileName}" media-type="${image.mime}" isEmbeded="1"/>`).join('');
   const content = baseContent
@@ -280,21 +281,21 @@ export function createHwpxBytesFromTemplate(title: string, questions: AnalyzedQu
   ]);
 }
 
-function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestion[], images: ReturnType<typeof collectPageImages>, tableStyles: { border: number; headerBorder: number; runs:(text:string,base?:string,nextId?:()=>number)=>string }, options: DocumentExportOptions) {
+function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestion[], images: ReturnType<typeof collectPageImages>, tableStyles: { border: number; headerBorder: number; keepNextParaPr: string; runs:(text:string,base?:string,nextId?:()=>number)=>string }, options: DocumentExportOptions) {
   const open = base.match(/<hs:sec\b[^>]*>/)?.[0];
   const first = base.match(/<hp:p\b[\s\S]*?<\/hp:p>/)?.[0]
     ?.replace(/<hp:linesegarray>[\s\S]*?<\/hp:linesegarray>/g, '')
     .replace(/id="\d+"/, 'id="1"');
   if (!open || !first) throw new Error('HWPX 베이스 템플릿의 secPr/colPr를 찾지 못했습니다.');
   let id = 2;
-  const paragraph = (text: string, charPr = '0') => `<hp:p id="${id++}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">${tableStyles.runs(text,charPr,()=>id++)}</hp:p>`;
+  const paragraph = (text: string, charPr = '0', keepNext = false) => `<hp:p id="${id++}" paraPrIDRef="${keepNext ? tableStyles.keepNextParaPr : '0'}" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">${tableStyles.runs(text,charPr,()=>id++)}</hp:p>`;
   const parts = [first, paragraph(title, '5'), paragraph(`문항 ${questions.length}개 · 성취기준별 자동 분류`, '6'), paragraph('')];
   for (const [index, question] of questions.entries()) {
     parts.push(paragraph(`${questionLabel(question)} 문항`, '6'));
     if (question.sourceFileName) parts.push(paragraph(`원본: ${question.sourceFileName} · ${questionLabel(question)}`, '2'));
     const sourceImage = (imageId: string) => images.sourceByQuestion.get(index)!.get(imageId)!;
-    const contentParagraph = (text: string, charPr = '0', availableWidth = 40000) => {
-      if (!hasHwpxIdentity(question) || !referencedSourceImageIds(text).size) return paragraph(text, charPr);
+    const contentParagraph = (text: string, charPr = '0', availableWidth = 40000, keepNext = false) => {
+      if (!hasHwpxIdentity(question) || !referencedSourceImageIds(text).size) return paragraph(text, charPr, keepNext);
       // Validate the whole paragraph before textRuns/image splitting. A rich
       // text boundary inside $...$ must not hide a malformed partial equation.
       if (hasUnbalancedMathDelimiters(text) && /(?<!\\)\$(?=[A-Za-z\\{]|[^$\n]*[_^\\])/.test(text)) {
@@ -309,7 +310,7 @@ function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestio
         const styled = `${run.bold ? '<b>' : ''}${run.underline ? '<u>' : ''}${piece.text}${run.underline ? '</u>' : ''}${run.bold ? '</b>' : ''}`;
         return tableStyles.runs(styled, charPr, () => id++);
       }).join('')).join('');
-      return `<hp:p id="${paragraphId}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">${runs}</hp:p>`;
+      return `<hp:p id="${paragraphId}" paraPrIDRef="${keepNext ? tableStyles.keepNextParaPr : '0'}" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">${runs}</hp:p>`;
     };
     try { parts.push(hwpxQuestionContent(question.text, { ...tableStyles, paragraph: contentParagraph, nextId: () => id++, imageSize: hasHwpxIdentity(question) ? (imageId, width) => inlineImageSize(sourceImage(imageId), width, 75, 56000) : undefined })); }
     catch (error) { throw new Error(`${questionLabel(question)} 문항: ${error instanceof Error ? error.message : 'HWPX 수식 변환에 실패했습니다.'}`); }

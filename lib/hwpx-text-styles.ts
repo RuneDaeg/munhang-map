@@ -13,6 +13,27 @@ const xml = (text: string) =>
         "'": '&apos;',
       })[c]!,
   );
+
+// Captions must travel with the following inline table, without making the
+// table itself (or a long question) unbreakable. Keep the base style untouched.
+export function prepareHwpxParagraphStyles(header: string) {
+  const section = header.match(/<hh:paraProperties\b[^>]*>[\s\S]*?<\/hh:paraProperties>/)?.[0];
+  const styles = section ? [...section.matchAll(/<hh:paraPr\b[^>]*>[\s\S]*?<\/hh:paraPr>/g)].map(match => match[0]) : [];
+  const base = styles.find(style => /\bid="0"/.test(style.match(/^<hh:paraPr\b[^>]*>/)![0]));
+  if (!section || !base || !/<hh:breakSetting\b/.test(base)) throw new Error('HWPX 기본 문단 스타일을 찾지 못했습니다.');
+  const keepNextParaPr = String(Math.max(...styles.map(style => Number(style.match(/^<hh:paraPr\b[^>]*\bid="(\d+)"/)![1]))) + 1);
+  const caption = base.replace(/\bid="0"/, `id="${keepNextParaPr}"`)
+    .replace(/<hh:breakSetting\b[^>]*\/>/, setting => setting
+      .replace(/\bkeepWithNext="[^"]*"/, 'keepWithNext="1"')
+      .replace(/\bkeepLines="[^"]*"/, 'keepLines="1"'));
+  return {
+    header: header.replace(section, section
+      .replace(/itemCnt="\d+"/, `itemCnt="${styles.length + 1}"`)
+      .replace('</hh:paraProperties>', `${caption}</hh:paraProperties>`)),
+    keepNextParaPr,
+  };
+}
+
 export function prepareHwpxTextStyles(header: string) {
   const section = header.match(
     /<hh:charProperties\b[^>]*>[\s\S]*?<\/hh:charProperties>/,

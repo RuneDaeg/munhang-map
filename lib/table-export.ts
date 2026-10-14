@@ -170,7 +170,7 @@ export function prepareHwpxTableStyles(header: string) {
 }
 
 type HwpxContext = {
-  paragraph: (text: string, charPr?: string, availableWidth?: number) => string;
+  paragraph: (text: string, charPr?: string, availableWidth?: number, keepNext?: boolean) => string;
   imageSize?: (id: string, availableWidth: number) => { width: number; height: number };
   nextId: () => number;
   border: number;
@@ -213,13 +213,14 @@ export function hwpxQuestionContent(
   text: string,
   context: HwpxContext,
 ): string {
-  return parseQuestionContent(text)
-    .map((block) => {
+  const blocks = parseQuestionContent(text);
+  return blocks
+    .map((block, index) => {
       // Hancom may clip tables nested inside a single very tall cell. Keep every
       // inner table native, but split the enclosing box into consecutive segments.
       if (block.kind === 'box' && block.text.includes(':::')) {
         return (
-          (block.title ? context.paragraph(block.title, '6') : '') +
+          (block.title ? context.paragraph(block.title, '6', undefined, true) : '') +
           parseQuestionContent(block.text)
             .map((child) => {
               if (child.kind === 'text' && !child.text.trim()) return '';
@@ -234,11 +235,12 @@ export function hwpxQuestionContent(
             .join('')
         );
       }
-      if (block.kind === 'text')
-        return paragraphLines(block.text)
-          .filter(Boolean)
-          .map((line) => context.paragraph(line))
-          .join('');
+      if (block.kind === 'text') {
+        const lines = paragraphLines(block.text).filter(line => line.trim());
+        const followedByTable = blocks[index + 1] && blocks[index + 1].kind !== 'text';
+        return lines.map((line, lineIndex) => context.paragraph(line, undefined, undefined,
+          Boolean(followedByTable && lineIndex === lines.length - 1))).join('');
+      }
       const rows = rowsOf(block);
       const widths = widthsOf(rows, 40000);
       // Base template: 10pt body, 160% line spacing. Grow every cell in a row
@@ -269,7 +271,7 @@ export function hwpxQuestionContent(
               .join('')}</hp:tr>`,
         )
         .join('')}</hp:tbl><hp:t/></hp:run></hp:p>`;
-      return `${block.title ? context.paragraph(block.title, '6') : ''}${table}${context.paragraph('')}`;
+      return `${block.title ? context.paragraph(block.title, '6', undefined, true) : ''}${table}${context.paragraph('')}`;
     })
     .join('');
 }
