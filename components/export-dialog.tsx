@@ -56,7 +56,7 @@ export function ExportDialog({ fileName, questions, onClose }: { fileName: strin
         <NativeSelectOption value="standard">성취기준마다 파일 분리 · ZIP으로 받기</NativeSelectOption>
         <NativeSelectOption value="single">모든 문항을 문서 하나로 받기</NativeSelectOption>
       </NativeSelect>
-      <p className="text-sm leading-6 text-muted-foreground">ZIP에는 성취기준별 문서와 원본 파일·문항 번호를 정리한 목록이 들어갑니다. 미분류 문항은 별도 파일로 보존됩니다. HWPX 삽입 그림은 문서에 첨부되며 원문 페이지 캡처와는 다릅니다.</p>
+      <p className="text-sm leading-6 text-muted-foreground">ZIP에는 성취기준별 문서와 원본 파일·문항 번호를 정리한 목록이 들어갑니다. 미분류 문항은 별도 파일로 보존됩니다. HWPX 삽입 그림은 본문의 표식 위치에 들어가며 원문 페이지 캡처와는 다릅니다.</p>
       <div className="grid grid-cols-2 gap-3">
         <Button disabled={exporting || !questions.length} onClick={() => void save('docx')}><Download /> Word · DOCX</Button>
         <Button variant="outline" disabled={exporting || !questions.length} onClick={() => void save('hwpx')}><Download /> 한글 · HWPX</Button>

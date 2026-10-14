@@ -178,7 +178,7 @@ test('DOCX and HWPX exclude answers by default; opt-in exports literal answers w
     const bytes = create({ includeAnswers: true }), files = unzip(bytes);
     const content = files.get(format === 'docx' ? 'word/document.xml' : 'Contents/section0.xml').toString();
     assert.match(content, /ANSWER_PRIVATE/); assert.match(content, /&lt;hp:equation&gt;/); assert.match(content, /\\bad\{/);
-    assert.match(content, /HWPX 삽입 그림 \(원문 페이지 캡처 아님\)/);
+    assert.match(content, /HWPX 삽입 그림 · 삽입 위치 미확인 \(image1\)/);
     assert.deepEqual([...files].find(([name]) => name.endsWith('/question1.png'))[1], Buffer.from(png.split(',')[1], 'base64'));
     if (format === 'hwpx') assert.match(files.get('Preview/PrvText.txt').toString(), /ANSWER_PRIVATE/);
   }

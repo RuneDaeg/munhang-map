@@ -572,7 +572,7 @@ export default function Home() {
                           <button type="button" onClick={() => setSelected(index)} aria-label={`${questionLabel(question)} 문항 정보 보기`} aria-pressed={selected === index} className={`grid size-11 place-items-center rounded-2xl text-lg font-extrabold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${selected === index ? 'bg-primary text-white' : 'bg-muted text-foreground'}`}>{question.sourceQuestionLabel ? '예제' : String(question.sourceQuestionNumber ?? question.number).padStart(2, '0')}</button>
                           <div className="min-w-0">
                             <span className="flex flex-wrap items-center gap-2"><span className="text-xs font-medium text-muted-foreground">{question.type}{question.sectionLabel ? ` · ${question.sectionLabel}` : ''}{question.sourceQuestionLabel ? ` · ${question.sourceQuestionLabel}` : ''}</span><Badge variant="outline" className="h-5 border-primary/15 bg-primary/5 text-primary">{question.domain}</Badge>{countUnresolvedGlyphs(question.text) ? <Badge variant="secondary" className="h-5 bg-amber-100 text-amber-900">문자 복원 확인 필요</Badge> : question.visionEnhanced && <Badge variant="secondary" className="h-5 bg-emerald-50 text-emerald-700">수식·그림 인식</Badge>}</span>
-                            <div className="mt-2 min-w-0 overflow-x-auto text-[15px] font-medium leading-6 focus-visible:outline-2 focus-visible:outline-ring" data-question-preview role="group" aria-label={`${questionLabel(question)} 문항 내용`} tabIndex={0}><Suspense fallback={normalizeQuestionText(question.text)}><MathText text={question.text} compact /></Suspense></div>
+                            <div className="mt-2 min-w-0 overflow-x-auto text-[15px] font-medium leading-6 focus-visible:outline-2 focus-visible:outline-ring" data-question-preview role="group" aria-label={`${questionLabel(question)} 문항 내용`} tabIndex={0}><Suspense fallback={normalizeQuestionText(question.text)}><MathText text={question.text} compact sourceImages={question.sourceFormat === 'hwpx' ? question.sourceImages ?? [] : undefined} /></Suspense></div>
                           </div>
                           <span className="col-start-2 flex items-center gap-2 self-center sm:col-start-auto">
                             <span className={`size-2 rounded-full ${question.validationFlags?.length ? 'bg-amber-400' : 'bg-emerald-500'}`} />
@@ -673,8 +673,7 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canRecogn
         </div>
         {(question.explanation || question.explanationImages?.length) && <details className="mb-4 rounded-xl border p-3">
           <summary className="cursor-pointer text-sm font-semibold">원문 해설 보기 · 검토 JSON·문제함에만 보존</summary>
-          <Suspense fallback={<p>해설을 불러오는 중…</p>}><MathText text={question.explanation ?? ''} /></Suspense>
-          {question.explanationImages?.map(image => <img key={image.id} src={image.image} alt={`해설 삽입 그림 ${image.id}`} loading="lazy" className="my-2 h-auto max-w-full bg-white" />)}
+          <Suspense fallback={<p>해설을 불러오는 중…</p>}><MathText text={question.explanation ?? ''} sourceImages={question.sourceFormat === 'hwpx' ? question.explanationImages ?? [] : undefined} /></Suspense>
         </details>}
         {question.examSubject && <p className="mb-3 rounded-lg bg-primary/5 px-3 py-2 text-sm text-primary">{question.sourceFormat === 'hwpx' ? 'HWPX 문서 정보' : `${question.examSubject.page}쪽 머리말`}에서 ‘{question.examSubject.label}’ 감지 · {question.selectedSubjectKey ? '직접 선택한 교과를 우선 반영' : '관련 교과 안에서 성취기준 추천'}</p>}
         {question.captureWarning && <output className="mb-3 block rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{question.captureWarning}</output>}
@@ -689,23 +688,20 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canRecogn
             <img src={capture.image} alt={`${questionLabel(question)} 문항의 발문, 그림자료, 선택지를 포함한 원문 캡처 ${index + 1}`} className="h-auto w-full bg-white object-contain" />
           </figure>
         ))}
-        {question.sourceImages?.map(image => <figure key={image.id} className="mb-4 overflow-hidden rounded-xl border">
-          <figcaption className="bg-muted px-3 py-2 text-xs">{image.label || `HWPX 삽입 그림 ${image.id}`} · 원본 페이지 캡처 아님</figcaption>
-          <img src={image.image} alt={image.label || `HWPX 삽입 그림 ${image.id}`} className="h-auto max-w-full bg-white" />
-        </figure>)}
         <div className="mb-5 rounded-xl border bg-muted/35 p-3">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <p className="text-sm font-semibold text-muted-foreground">문항 미리보기 · 수식·표·보기</p>
             <Badge variant="secondary">{boxCount || tableCount ? `상자 ${boxCount}개 · 표 ${tableCount}개` : '상자·표 구조 없음'}</Badge>
           </div>
           {contentBlocks.some((block) => block.kind === 'box' && block.inferred) && <p className="mb-2 text-xs text-muted-foreground">보기 제목과 항목·선택지 구분을 바탕으로 상자를 묶었습니다. 원문과 비교해 주세요.</p>}
-          <Suspense fallback={<p className="text-sm text-muted-foreground">문항 미리보기를 불러오는 중…</p>}><MathText text={question.text} /></Suspense>
+          <Suspense fallback={<p className="text-sm text-muted-foreground">문항 미리보기를 불러오는 중…</p>}><MathText text={question.text} sourceImages={question.sourceFormat === 'hwpx' ? question.sourceImages ?? [] : undefined} /></Suspense>
           {question.visualChoices?.length ? <div className="mt-4 space-y-3" aria-label="원본 그림 선택지">
             <p className="text-sm font-semibold">그림 선택지 · 원본 모양 보존</p>
             {question.visualChoices.map((choice,index)=><figure key={`${choice.page}-${choice.label}-${index}`} className="border bg-white p-2"><figcaption className="text-sm text-muted-foreground">{choice.label} 원본 선택지 · 문서에 첨부됨</figcaption><img src={choice.image} alt={`${choice.label} 선택지의 칸 배치와 숫자·수식을 보존한 원본`} className="h-auto max-w-full" /></figure>)}
           </div>:null}
         </div>
-        <p className="mb-2 text-sm font-semibold text-muted-foreground">텍스트 편집 · 상자·표 표식은 위 미리보기에 적용됩니다</p>
+        <p className="mb-2 text-sm font-semibold text-muted-foreground">텍스트 편집 · 상자·표·그림 표식은 위 미리보기에 적용됩니다</p>
+        {question.sourceFormat === 'hwpx' && <p className="mb-2 text-xs leading-5 text-muted-foreground">[삽입 그림: ID] 표식을 옮기면 화면과 DOCX·HWPX에서도 그 위치에 그림이 들어갑니다. ID는 바꾸지 마세요.</p>}
         <QuestionTextEditor ref={textRef} value={question.text} onChange={onTextChange} onCursor={setCursor} />
         <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <span className="mr-1 text-xs font-semibold text-muted-foreground">LaTeX 삽입</span>

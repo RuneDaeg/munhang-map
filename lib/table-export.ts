@@ -9,6 +9,7 @@ import { textRuns, unformattedText } from './text-formatting';
 import { latexToOmml } from './docx-math';
 import { measureHwpxMath } from './hwpx-math';
 import { hasUnbalancedMathDelimiters, mathForRendering, splitMathText } from './math-normalization';
+import { splitSourceImageMarkers } from './source-image-markers';
 
 const escapeXml = (value: string) =>
   value.replace(
@@ -58,6 +59,8 @@ function docxParagraph(
   header = false,
   align = 'left',
   keepNext = false,
+  availableWidth = 9400,
+  imageRun?: (id: string, availableWidth: number) => string,
 ) {
   // A partial rich-text selection can cross a TeX delimiter. Never silently
   // serialize the fragments as $...$ text if they cannot be one math object.
@@ -68,9 +71,11 @@ function docxParagraph(
     throw new Error('수식 일부에 적용된 굵게·밑줄을 해제하고, $...$ 수식 전체를 선택해 서식을 적용해 주세요.');
   }
   const runs = textRuns(text)
-    .map((run) => splitMathText(run.text).map((part) => part.math
+    .map((run) => (imageRun ? splitSourceImageMarkers(run.text) : [{ kind: 'text' as const, text: run.text }]).map((piece) => piece.kind === 'image'
+      ? imageRun!(piece.id, availableWidth)
+      : splitMathText(piece.text).map((part) => part.math
       ? latexToOmml(mathForRendering(part.text), { display: part.display, bold: header || run.bold, underline: run.underline })
-      : `<w:r><w:rPr>${header || run.bold ? '<w:b/>' : ''}${run.underline ? '<w:u w:val="single"/>' : ''}</w:rPr><w:t xml:space="preserve">${escapeXml(part.text)}</w:t></w:r>`).join(''))
+      : `<w:r><w:rPr>${header || run.bold ? '<w:b/>' : ''}${run.underline ? '<w:u w:val="single"/>' : ''}</w:rPr><w:t xml:space="preserve">${escapeXml(part.text)}</w:t></w:r>`).join('')).join(''))
     .join('');
   return `<w:p><w:pPr><w:jc w:val="${align}"/><w:spacing w:after="100" w:line="320" w:lineRule="auto"/>${keepNext ? '<w:keepNext/>' : ''}</w:pPr>${runs}</w:p>`;
 }
@@ -78,6 +83,7 @@ function docxParagraph(
 export function docxQuestionContent(
   text: string,
   availableWidth = 9400,
+  imageRun?: (id: string, availableWidth: number) => string,
 ): string {
   const blocks = parseQuestionContent(text);
   return blocks
@@ -93,6 +99,8 @@ export function docxQuestionContent(
               false,
               'left',
               Boolean(followedByTable && lineIndex === lines.length - 1),
+              availableWidth,
+              imageRun,
             ),
           )
           .join('');
@@ -102,7 +110,7 @@ export function docxQuestionContent(
       const borders = ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']
         .map((side) => `<w:${side} w:val="single" w:sz="6" w:color="808080"/>`)
         .join('');
-      return `${block.title ? docxParagraph(block.title, true, 'center', true) : ''}<w:tbl><w:tblPr><w:tblW w:w="${availableWidth}" w:type="dxa"/><w:tblLayout w:type="fixed"/><w:tblBorders>${borders}</w:tblBorders><w:tblCellMar><w:top w:w="150" w:type="dxa"/><w:left w:w="150" w:type="dxa"/><w:bottom w:w="150" w:type="dxa"/><w:right w:w="150" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map((width) => `<w:gridCol w:w="${width}"/>`).join('')}</w:tblGrid>${rows
+      return `${block.title ? docxParagraph(block.title, true, 'center', true, availableWidth, imageRun) : ''}<w:tbl><w:tblPr><w:tblW w:w="${availableWidth}" w:type="dxa"/><w:tblLayout w:type="fixed"/><w:tblBorders>${borders}</w:tblBorders><w:tblCellMar><w:top w:w="150" w:type="dxa"/><w:left w:w="150" w:type="dxa"/><w:bottom w:w="150" w:type="dxa"/><w:right w:w="150" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map((width) => `<w:gridCol w:w="${width}"/>`).join('')}</w:tblGrid>${rows
         .map((row, r) => {
           const header = block.kind === 'table' && block.header && r === 0;
           return `<w:tr>${block.kind === 'table' ? `<w:trPr><w:cantSplit/>${header ? '<w:tblHeader/>' : ''}</w:trPr>` : ''}${row
@@ -110,7 +118,7 @@ export function docxQuestionContent(
               (cell, c) =>
                 `<w:tc><w:tcPr><w:tcW w:w="${widths[c]}" w:type="dxa"/><w:vAlign w:val="center"/>${header ? '<w:shd w:val="clear" w:fill="EAF0F4"/>' : ''}</w:tcPr>${
                   block.kind === 'box' && cell.includes(':::')
-                    ? docxQuestionContent(cell, Math.max(1200, widths[c] - 300))
+                    ? docxQuestionContent(cell, Math.max(1, widths[c] - 300), imageRun)
                     : paragraphLines(cell)
                         .map((line) =>
                           docxParagraph(
@@ -120,6 +128,9 @@ export function docxQuestionContent(
                               unformattedText(cell).length < 15
                               ? 'center'
                               : 'left',
+                            false,
+                            Math.max(1, widths[c] - 300),
+                            imageRun,
                           ),
                         )
                         .join('')
@@ -159,7 +170,8 @@ export function prepareHwpxTableStyles(header: string) {
 }
 
 type HwpxContext = {
-  paragraph: (text: string, charPr?: string) => string;
+  paragraph: (text: string, charPr?: string, availableWidth?: number) => string;
+  imageSize?: (id: string, availableWidth: number) => { width: number; height: number };
   nextId: () => number;
   border: number;
   headerBorder: number;
@@ -167,17 +179,34 @@ type HwpxContext = {
 
 // HWPX math is an inline object. Reserve space for its fraction/root/script
 // height as well as prose wrapping; Hancom recalculates the final object size.
-function hwpxLineHeight(line: string, availableWidth: number): number {
+function hwpxLineHeight(line: string, availableWidth: number, imageSize?: HwpxContext['imageSize']): number {
   let width = 0;
   let height = 1600;
-  for (const part of splitMathText(unformattedText(line))) {
-    if (part.math) {
-      const size = measureHwpxMath(mathForRendering(part.text), { fontSizePt: 10, display: part.display });
+  let pictureHeight = 0;
+  let separatedTextHeight = 0;
+  for (const piece of imageSize ? splitSourceImageMarkers(unformattedText(line)) : [{ kind: 'text' as const, text: unformattedText(line) }]) {
+    if (piece.kind === 'image') {
+      const size = imageSize!(piece.id, availableWidth);
       width += size.width;
       height = Math.max(height, size.height + 400);
-    } else width += approximateTextWidth(part.text, 0.6) * 1000;
+      pictureHeight += size.height + 400;
+      continue;
+    }
+    if (imageSize && piece.text.trim()) separatedTextHeight += hwpxLineHeight(piece.text, availableWidth);
+    for (const part of splitMathText(piece.text)) {
+      if (part.math) {
+        const size = measureHwpxMath(mathForRendering(part.text), { fontSizePt: 10, display: part.display });
+        width += size.width;
+        height = Math.max(height, size.height + 400);
+      } else width += approximateTextWidth(part.text, 0.6) * 1000;
+    }
   }
-  return Math.max(1, Math.ceil(width / Math.max(1000, availableWidth))) * height;
+  const estimate = Math.max(1, Math.ceil(width / Math.max(1000, availableWidth))) * height;
+  // Pictures cannot break across lines: three images slightly wider than half
+  // a cell need three rows, even when their total width suggests only two.
+  // Reserve each picture and intervening text separately as a conservative
+  // lower bound; leave the existing text/math-only sizing unchanged.
+  return pictureHeight ? Math.max(estimate, pictureHeight + separatedTextHeight) : estimate;
 }
 
 export function hwpxQuestionContent(
@@ -217,7 +246,7 @@ export function hwpxQuestionContent(
       const heights = rows.map((row) =>
         Math.max(
           ...row.map((cell, col) =>
-            paragraphLines(cell).reduce((height, line) => height + hwpxLineHeight(line, widths[col] - 1200), 1200),
+            paragraphLines(cell).reduce((height, line) => height + hwpxLineHeight(line, Math.max(1, widths[col] - 1200), context.imageSize), 1200),
           ),
         ),
       );
@@ -232,7 +261,7 @@ export function hwpxQuestionContent(
                 const header =
                   block.kind === 'table' && block.header && r === 0;
                 return `<hp:tc name="" header="${header ? 1 : 0}" hasMargin="1" protect="0" editable="0" dirty="1" borderFillIDRef="${header ? context.headerBorder : context.border}"><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${paragraphLines(cell)
-                  .map((line) => context.paragraph(line))
+                  .map((line) => context.paragraph(line, undefined, Math.max(1, widths[c] - 1200)))
                   .join(
                     '',
                   )}</hp:subList><hp:cellAddr colAddr="${c}" rowAddr="${r}"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="${widths[c]}" height="${heights[r]}"/><hp:cellMargin left="600" right="600" top="600" bottom="600"/></hp:tc>`;

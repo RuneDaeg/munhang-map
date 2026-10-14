@@ -3,7 +3,9 @@ import { hasHwpxIdentity, questionLabel, readSourceImages, sourceBasename } from
 import { questionPlainText } from './question-content';
 import { docxQuestionContent, hwpxQuestionContent, prepareHwpxTableStyles } from './table-export';
 import { prepareHwpxTextStyles } from './hwpx-text-styles';
-import { unformattedText } from './text-formatting';
+import { textRuns, unformattedText } from './text-formatting';
+import { referencedSourceImageIds, splitSourceImageMarkers } from './source-image-markers';
+import { hasUnbalancedMathDelimiters, splitMathText } from './math-normalization';
 
 // HWPX packaging follows jkf87/hwpx-skill Workflow A and uses its MIT base
 // skeleton. Full attribution and pinned revisions are in THIRD_PARTY_NOTICES.md.
@@ -192,8 +194,14 @@ export function downloadDocx(title: string, questions: AnalyzedQuestion[], optio
 
 export function createDocxBytes(title: string, questions: AnalyzedQuestion[], options: DocumentExportOptions = {}) {
   const images = collectPageImages(questions);
-  const contents = questions.map((question) => {
-    try { return docxQuestionContent(question.text); }
+  let nextPictureId = 1;
+  const contents = questions.map((question, index) => {
+    try {
+      return docxQuestionContent(question.text, 9400, hasHwpxIdentity(question) ? (id, width) => {
+        const image = images.sourceByQuestion.get(index)!.get(id)!;
+        return docxImageRun(`rIdImage${image.itemId}`, nextPictureId++, image, width);
+      } : undefined);
+    }
     catch (error) { throw new Error(`${questionLabel(question)} 문항: ${error instanceof Error ? error.message : '수식 변환에 실패했습니다.'}`); }
   });
   const body = questions.map((question, index) => `
@@ -203,7 +211,7 @@ export function createDocxBytes(title: string, questions: AnalyzedQuestion[], op
     ${options.includeAnswers && answerText(question) ? `<w:p><w:r><w:t xml:space="preserve">${xml(`정답: ${answerText(question)}`)}</w:t></w:r></w:p>` : ''}
     <w:p><w:pPr><w:pStyle w:val="Standard"/></w:pPr><w:r><w:t>${xml(`${question.standardCode} ${question.domain}`)}</w:t></w:r></w:p>
     <w:p><w:r><w:t>${xml(question.standard)}</w:t></w:r></w:p>
-    ${(images.byQuestion.get(index) ?? []).map((image, imageIndex) => `<w:p><w:pPr><w:keepNext/></w:pPr><w:r><w:rPr><w:b/><w:color w:val="64748B"/></w:rPr><w:t>${xml(image.label || (question.questionCaptures?.length ? '문항 전체 원문 캡처' : '문항 그림자료'))}${question.captureWarning ? ' · 범위 확인 필요' : ''}</w:t></w:r></w:p>${docxImageParagraph(`rIdImage${image.itemId}`, index * 100 + imageIndex + 1, image)}`).join('')}`).join('');
+    ${(images.byQuestion.get(index) ?? []).map((image) => `<w:p><w:pPr><w:keepNext/></w:pPr><w:r><w:rPr><w:b/><w:color w:val="64748B"/></w:rPr><w:t>${xml(image.label || (question.questionCaptures?.length ? '문항 전체 원문 캡처' : '문항 그림자료'))}${question.captureWarning ? ' · 범위 확인 필요' : ''}</w:t></w:r></w:p>${docxImageParagraph(`rIdImage${image.itemId}`, nextPictureId++, image)}`).join('')}`).join('');
   const sourceNotice = '<w:p><w:r><w:rPr><w:color w:val="64748B"/><w:sz w:val="18"/></w:rPr><w:t>성취기준 출처: pblsketch/worksheet-grab (2022 개정 교육과정)</w:t></w:r></w:p>';
   const imageRelationships = images.unique.map((image) => `<Relationship Id="rIdImage${image.itemId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${image.fileName}"/>`).join('');
   const entries: ZipEntry[] = [
@@ -252,7 +260,7 @@ export function createHwpxBytesFromTemplate(title: string, questions: AnalyzedQu
   const images = collectPageImages(questions);
   const textStyles = prepareHwpxTextStyles(decoder.decode(requiredTemplatePart(template, 'Contents/header.xml')));
   const tableStyles = {...prepareHwpxTableStyles(textStyles.header),runs:textStyles.runs};
-  const section = makeHwpxSection(baseSection, title, questions, images.byQuestion, tableStyles, options);
+  const section = makeHwpxSection(baseSection, title, questions, images, tableStyles, options);
   const imageManifest = images.unique.map((image) => `<opf:item id="${image.itemId}" href="BinData/${image.fileName}" media-type="${image.mime}" isEmbeded="1"/>`).join('');
   const content = baseContent
     .replace('<opf:title/>', `<opf:title>${xml(title)}</opf:title>`)
@@ -272,7 +280,7 @@ export function createHwpxBytesFromTemplate(title: string, questions: AnalyzedQu
   ]);
 }
 
-function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestion[], images: Map<number, EmbeddedPageImage[]>, tableStyles: { border: number; headerBorder: number; runs:(text:string,base?:string,nextId?:()=>number)=>string }, options: DocumentExportOptions) {
+function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestion[], images: ReturnType<typeof collectPageImages>, tableStyles: { border: number; headerBorder: number; runs:(text:string,base?:string,nextId?:()=>number)=>string }, options: DocumentExportOptions) {
   const open = base.match(/<hs:sec\b[^>]*>/)?.[0];
   const first = base.match(/<hp:p\b[\s\S]*?<\/hp:p>/)?.[0]
     ?.replace(/<hp:linesegarray>[\s\S]*?<\/hp:linesegarray>/g, '')
@@ -284,13 +292,32 @@ function makeHwpxSection(base: string, title: string, questions: AnalyzedQuestio
   for (const [index, question] of questions.entries()) {
     parts.push(paragraph(`${questionLabel(question)} 문항`, '6'));
     if (question.sourceFileName) parts.push(paragraph(`원본: ${question.sourceFileName} · ${questionLabel(question)}`, '2'));
-    try { parts.push(hwpxQuestionContent(question.text, { paragraph, nextId: () => id++, ...tableStyles })); }
+    const sourceImage = (imageId: string) => images.sourceByQuestion.get(index)!.get(imageId)!;
+    const contentParagraph = (text: string, charPr = '0', availableWidth = 40000) => {
+      if (!hasHwpxIdentity(question) || !referencedSourceImageIds(text).size) return paragraph(text, charPr);
+      // Validate the whole paragraph before textRuns/image splitting. A rich
+      // text boundary inside $...$ must not hide a malformed partial equation.
+      if (hasUnbalancedMathDelimiters(text) && /(?<!\\)\$(?=[A-Za-z\\{]|[^$\n]*[_^\\])/.test(text)) {
+        throw new Error('수식의 $ 구분자가 닫히지 않았습니다. 문항 편집창에서 수식을 확인해 주세요.');
+      }
+      if (splitMathText(text).some(part => part.math && /<\/?(?:b|u)>|\[\/?(?:b|u)\]/.test(part.text))) {
+        throw new Error('수식 일부에 적용된 굵게·밑줄을 해제하고, $...$ 수식 전체를 선택해 서식을 적용해 주세요.');
+      }
+      const paragraphId = id++;
+      const runs = textRuns(text).map(run => splitSourceImageMarkers(run.text).map(piece => {
+        if (piece.kind === 'image') return hwpxImageRun(sourceImage(piece.id), id++, id++, availableWidth);
+        const styled = `${run.bold ? '<b>' : ''}${run.underline ? '<u>' : ''}${piece.text}${run.underline ? '</u>' : ''}${run.bold ? '</b>' : ''}`;
+        return tableStyles.runs(styled, charPr, () => id++);
+      }).join('')).join('');
+      return `<hp:p id="${paragraphId}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">${runs}</hp:p>`;
+    };
+    try { parts.push(hwpxQuestionContent(question.text, { ...tableStyles, paragraph: contentParagraph, nextId: () => id++, imageSize: hasHwpxIdentity(question) ? (imageId, width) => inlineImageSize(sourceImage(imageId), width, 75, 56000) : undefined })); }
     catch (error) { throw new Error(`${questionLabel(question)} 문항: ${error instanceof Error ? error.message : 'HWPX 수식 변환에 실패했습니다.'}`); }
     // Answers are literal text, never interpreted as LaTeX, tables or markup.
     if (options.includeAnswers && answerText(question)) parts.push(`<hp:p id="${id++}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>${xml(`정답: ${answerText(question)}`)}</hp:t></hp:run></hp:p>`);
     parts.push(paragraph(`${question.standardCode}  ${question.domain}`, '6'));
     parts.push(paragraph(`- ${question.standard}`));
-    for (const image of images.get(index) ?? []) {
+    for (const image of images.byQuestion.get(index) ?? []) {
       parts.push(paragraph(`${image.label || (question.questionCaptures?.length ? '문항 전체 원문 캡처' : '문항 그림자료')}${question.captureWarning ? ' · 범위 확인 필요' : ''}`, '2'));
       parts.push(hwpxImageParagraph(id++, image, id++, id++));
     }
@@ -310,32 +337,51 @@ function collectPageImages(questions: AnalyzedQuestion[]) {
   const unique: EmbeddedPageImage[] = [];
   const byDataUrl = new Map<string, EmbeddedPageImage>();
   const byQuestion = new Map<number, EmbeddedPageImage[]>();
+  const sourceByQuestion = new Map<number, Map<string, EmbeddedPageImage>>();
+  const embed = (source: string) => {
+    const isPng = source.startsWith('data:image/png;base64,');
+    if (!isPng && !source.startsWith('data:image/jpeg;base64,')) return undefined;
+    let image = byDataUrl.get(source);
+    if (!image) {
+      const number = unique.length + 1;
+      const data = dataUrlBytes(source);
+      const [width, height] = (isPng ? pngDimensions(data) : jpegDimensions(data)) ?? [4, 3];
+      image = { itemId: `image${number}`, fileName: `question${number}.${isPng ? 'png' : 'jpg'}`, data, width, height, mime: isPng ? 'image/png' : 'image/jpeg' };
+      unique.push(image);
+      byDataUrl.set(source, image);
+    }
+    return image;
+  };
   questions.forEach((question, index) => {
     if (question.sourceFormat === 'hwpx' && !hasHwpxIdentity(question)) throw new Error(`${questionLabel(question)} HWPX 원본 정보가 올바르지 않습니다.`);
     const sources = question.questionCaptures?.length ? question.questionCaptures.map((capture) => capture.image) : question.figureImage ? [question.figureImage] : [];
     sources.push(...(question.visualChoices??[]).map(choice=>choice.image));
-    const sourceImages = hasHwpxIdentity(question) ? readSourceImages(question.sourceImages || []) : [];
-    sources.push(...sourceImages.map(image => image.image));
     const embedded: EmbeddedPageImage[] = [];
     for (const source of sources) {
-      const isPng = source.startsWith('data:image/png;base64,');
-      if (!isPng && !source.startsWith('data:image/jpeg;base64,')) continue;
-      let image = byDataUrl.get(source);
-      if (!image) {
-        const number = unique.length + 1;
-        const data = dataUrlBytes(source);
-        const [width, height] = (isPng ? pngDimensions(data) : jpegDimensions(data)) ?? [4, 3];
-        image = { itemId: `image${number}`, fileName: `question${number}.${isPng ? 'png' : 'jpg'}`, data, width, height, mime: isPng ? 'image/png' : 'image/jpeg' };
-        unique.push(image);
-        byDataUrl.set(source, image);
-      }
+      const image = embed(source);
+      if (!image) continue;
       const choice=question.visualChoices?.find(choice=>choice.image===source);
-      const hwpxImage = sourceImages.find(item => item.image === source);
-      embedded.push(hwpxImage ? { ...image, label: 'HWPX 삽입 그림 (원문 페이지 캡처 아님)' } : choice?{...image,label:`${choice.label} 원본 그림 선택지`}:image);
+      embedded.push(choice ? { ...image, label: `${choice.label} 원본 그림 선택지` } : image);
+    }
+    try {
+      const referenced = hasHwpxIdentity(question) ? referencedSourceImageIds(question.text) : new Set<string>();
+      const sourceImages = hasHwpxIdentity(question) ? readSourceImages(question.sourceImages || []) : [];
+      const scoped = new Map<string, EmbeddedPageImage>();
+      for (const source of sourceImages) {
+        const image = embed(source.image)!;
+        scoped.set(source.id, image);
+        // Older reviews and hand-edited text can lack location markers. Keep
+        // those images exactly once, explicitly labelled, instead of losing them.
+        if (!referenced.has(source.id)) embedded.push({ ...image, label: `HWPX 삽입 그림 · 삽입 위치 미확인 (${source.id})` });
+      }
+      for (const imageId of referenced) if (!scoped.has(imageId)) throw new Error(`삽입 그림 ${imageId}의 이미지 데이터가 없습니다. 원본 HWPX 또는 검토 파일을 다시 확인해 주세요.`);
+      sourceByQuestion.set(index, scoped);
+    } catch (error) {
+      throw new Error(`${questionLabel(question)} 문항: ${error instanceof Error ? error.message : '삽입 그림을 읽을 수 없습니다.'}`);
     }
     byQuestion.set(index, embedded);
   });
-  return { unique, byQuestion };
+  return { unique, byQuestion, sourceByQuestion };
 }
 
 function pngDimensions(bytes: Uint8Array): [number, number] | undefined {
@@ -365,18 +411,33 @@ function jpegDimensions(bytes: Uint8Array): [number, number] | undefined {
   return undefined;
 }
 
+function inlineImageSize(image: EmbeddedPageImage, availableWidth: number, unitsPerPixel: number, maxHeight: number) {
+  const scale = Math.min(unitsPerPixel, Math.max(1, availableWidth) / image.width, maxHeight / image.height);
+  return { width: Math.max(1, Math.round(image.width * scale)), height: Math.max(1, Math.round(image.height * scale)) };
+}
+
 function docxImageParagraph(relationshipId: string, imageId: number, image: EmbeddedPageImage) {
-  let width = 4480560;
-  let height = Math.round(width * image.height / image.width);
-  if (height > 6200000) { width = Math.round(width * 6200000 / height); height = 6200000; }
-  return `<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${width}" cy="${height}"/><wp:docPr id="${imageId}" name="문항 그림자료 ${imageId}"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="${imageId}" name="figure${imageId}.jpg"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relationshipId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${width}" cy="${height}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+  return `<w:p><w:pPr><w:jc w:val="center"/></w:pPr>${docxImageRun(relationshipId, imageId, image)}</w:p>`;
 }
 
 function hwpxImageParagraph(paragraphId: number, image: EmbeddedPageImage, pictureId: number, instanceId: number) {
+  return `<hp:p id="${paragraphId}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">${hwpxImageRun(image, pictureId, instanceId)}</hp:p>`;
+}
+
+function docxImageRun(relationshipId: string, imageId: number, image: EmbeddedPageImage, availableWidth?: number) {
+  let width = 4480560;
+  let height = Math.round(width * image.height / image.width);
+  if (height > 6200000) { width = Math.round(width * 6200000 / height); height = 6200000; }
+  if (availableWidth !== undefined) ({ width, height } = inlineImageSize(image, availableWidth * 635, 9525, 6200000));
+  return `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${width}" cy="${height}"/><wp:docPr id="${imageId}" name="문항 그림자료 ${imageId}"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="${imageId}" name="figure${imageId}.jpg"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relationshipId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${width}" cy="${height}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
+}
+
+function hwpxImageRun(image: EmbeddedPageImage, pictureId: number, instanceId: number, availableWidth?: number) {
   let width = 40000;
   let height = Math.round(width * image.height / image.width);
   if (height > 56000) { width = Math.round(width * 56000 / height); height = 56000; }
-  return `<hp:p id="${paragraphId}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:pic id="${pictureId}" zOrder="0" numberingType="PICTURE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="${instanceId}" reverse="0"><hp:offset x="0" y="0"/><hp:orgSz width="${width}" height="${height}"/><hp:curSz width="${width}" height="${height}"/><hp:flip horizontal="0" vertical="0"/><hp:rotationInfo angle="0" centerX="${Math.round(width / 2)}" centerY="${Math.round(height / 2)}" rotateimage="0"/><hp:renderingInfo><hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/></hp:renderingInfo><hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="${width}" y="0"/><hc:pt2 x="${width}" y="${height}"/><hc:pt3 x="0" y="${height}"/></hp:imgRect><hp:imgClip left="0" right="${width}" top="0" bottom="${height}"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:imgDim dimwidth="${width}" dimheight="${height}"/><hc:img binaryItemIDRef="${image.itemId}" bright="0" contrast="0" effect="REAL_PIC" alpha="0"/><hp:effects/><hp:sz width="${width}" widthRelTo="ABSOLUTE" height="${height}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="CENTER" vertOffset="0" horzOffset="0"/><hp:outMargin left="0" right="0" top="0" bottom="0"/><hp:shapeComment>문항 그림자료</hp:shapeComment></hp:pic></hp:run></hp:p>`;
+  if (availableWidth !== undefined) ({ width, height } = inlineImageSize(image, availableWidth, 75, 56000));
+  return `<hp:run charPrIDRef="0"><hp:pic id="${pictureId}" zOrder="0" numberingType="PICTURE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="${instanceId}" reverse="0"><hp:offset x="0" y="0"/><hp:orgSz width="${width}" height="${height}"/><hp:curSz width="${width}" height="${height}"/><hp:flip horizontal="0" vertical="0"/><hp:rotationInfo angle="0" centerX="${Math.round(width / 2)}" centerY="${Math.round(height / 2)}" rotateimage="0"/><hp:renderingInfo><hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/></hp:renderingInfo><hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="${width}" y="0"/><hc:pt2 x="${width}" y="${height}"/><hc:pt3 x="0" y="${height}"/></hp:imgRect><hp:imgClip left="0" right="${width}" top="0" bottom="${height}"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:imgDim dimwidth="${width}" dimheight="${height}"/><hc:img binaryItemIDRef="${image.itemId}" bright="0" contrast="0" effect="REAL_PIC" alpha="0"/><hp:effects/><hp:sz width="${width}" widthRelTo="ABSOLUTE" height="${height}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="1" affectLSpacing="${availableWidth === undefined ? 0 : 1}" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="CENTER" vertOffset="0" horzOffset="0"/><hp:outMargin left="0" right="0" top="0" bottom="0"/><hp:shapeComment>문항 그림자료</hp:shapeComment></hp:pic></hp:run>`;
 }
 
 function docxStyles() {
