@@ -71,7 +71,7 @@ export async function openApiConnectionSettings() {
     return result.ok;
   }
   if (typeof window !== 'undefined') {
-    window.location.assign('/settings.html');
+    window.open('/settings.html?from=workspace', '_blank', 'noopener');
     return true;
   }
   return false;

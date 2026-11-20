@@ -78,8 +78,12 @@ test('a manually split child keeps its own stem anchor despite shared context', 
   const question={number:2,text,textEdited:true,sharedPassage:{range:[1,2],text:'다음은 학생의 발표이다.',pages:[1]},examSubject:korean};
   assert.equal(ownAssessmentText(question),'발표자의 말하기 방식으로 적절한 것은?');
   assert.equal(mapAssessment(question,catalog).area,'speech');
-  const source=fs.readFileSync(path.join(__dirname,'../app/page.tsx'),'utf8');
-  assert.ok(source.includes('if (!marker) secondText = `${secondSourceNumber}. ${secondText}`'));
+  const {splitPdfQuestion} = require('../lib/pdf-question-edit.ts');
+  const prefix = '1. 다음은 학생의 발표이다.\n';
+  const parent = {...question, number:1, type:'자동 추출', text:prefix + text.slice(3)};
+  const [, child] = splitPdfQuestion(parent, prefix.length, [parent, question]);
+  assert.equal(child.text, text);
+  assert.equal(ownAssessmentText(child), ownAssessmentText(question));
 });
 
 test('changing subject clears the previous assessment explanation and stale flags', () => {

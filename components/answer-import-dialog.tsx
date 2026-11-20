@@ -28,6 +28,16 @@ export function AnswerImportDialog({ questions, onApply, onClose }: {
   const selected = rows.filter(row => row.checked && row.number && row.answer.trim());
   const duplicateTargets = new Set(selected.filter((row, index) => selected.findIndex(other => other.number === row.number) !== index).map(row => row.number));
   const byNumber = useMemo(() => new Map(questions.map(question => [String(question.number), question])), [questions]);
+  const questionOptions = useMemo(() => {
+    const labels = questions.map(questionLabel);
+    const counts = new Map<string, number>();
+    for (const label of labels) counts.set(label, (counts.get(label) ?? 0) + 1);
+    return questions.map((question, index) => {
+      const label = labels[index];
+      const detail = counts.get(label)! > 1 ? ` · 목록 ${index + 1} · ${question.text.slice(0, 28)}` : '';
+      return { number: question.number, label: `${label} · ${question.examSubject?.label || question.domain || '교과 미확정'}${detail}` };
+    });
+  }, [questions]);
 
   async function read(file: File) {
     if (reading) return;
@@ -71,7 +81,7 @@ export function AnswerImportDialog({ questions, onApply, onClose }: {
               <td className="max-w-56 p-2"><p>{[row.entry.sourceItemId, row.entry.subject, row.entry.sectionLabel, row.entry.sourceQuestionLabel || (row.entry.number !== undefined ? `${row.entry.number}번` : '')].filter(Boolean).join(' · ')}</p><p className="mt-1 text-xs text-muted-foreground">{row.entry.sourcePage ? `${row.entry.sourcePage}쪽 · ` : ''}{row.message}</p></td>
               <td className="p-2"><NativeSelect aria-label={`정답표 ${index + 1}행 연결 문항`} value={row.number} disabled={reading} onChange={event => change(index, { number: event.target.value, checked: Boolean(event.target.value) })}>
                 <NativeSelectOption value="">연결 안 함</NativeSelectOption>
-                {questions.map(question => <NativeSelectOption key={question.number} value={String(question.number)}>{questionLabel(question)} · {question.examSubject?.label || question.domain || '교과 미확정'}</NativeSelectOption>)}
+                {questionOptions.map(option => <NativeSelectOption key={option.number} value={String(option.number)}>{option.label}</NativeSelectOption>)}
               </NativeSelect>{row.number && byNumber.get(row.number)?.answer && <p className="mt-1 break-words text-xs text-amber-900">기존 정답: {byNumber.get(row.number)?.answer} → 선택한 새 값으로 변경</p>}</td>
               <td className="p-2"><input aria-label={`정답표 ${index + 1}행 정답`} value={row.answer} maxLength={500} disabled={reading} onChange={event => change(index, { answer: event.target.value })} className="w-28 rounded border bg-background px-2 py-1.5" /></td>
             </tr>; })}</tbody>

@@ -7,6 +7,7 @@ const vm = require('node:vm');
 const ts = require('typescript');
 require('./load-typescript.cjs');
 const { questionLabel } = require('../lib/question-context.ts');
+const { receiveRecognition, resolveRecognition } = require('../lib/recognition-merge.ts');
 
 // Exercise the production handler without mounting React or making API calls.
 // This is trusted checkout code, not a sandbox for untrusted source. AST guards
@@ -33,7 +34,7 @@ function setup() {
   const other = { number: 18, text: 'other question', questionCaptures: [{ image: 'other capture' }] };
   const calls = { status: 0, confirmation: [], recognition: [], errors: [], events: [] };
   const state = {
-    questionLabel,
+    questionLabel, receiveRecognition, conflicts: [],
     questionData: [question, other], selected: 0, current: [question, other],
     operationRef: { current: false }, recognizingQuestion: null, savingBank: false, status: 'ready',
     standards: [{ code: '[local-catalog]' }],
@@ -58,7 +59,12 @@ function setup() {
     loadAchievementStandards: async () => { throw new Error('The preloaded local catalog should be used'); },
     setStandards: () => {},
     classifyQuestion: question => question,
-    setQuestionData: update => { state.current = update(state.current); },
+    setWorkspace: update => {
+      const next = update({questions: state.current, conflicts: state.conflicts, recognitionNotice: ''});
+      state.current = next.questions;
+      state.conflicts = next.conflicts;
+      state.notice = next.recognitionNotice;
+    },
   };
   // No fetch, require, process, or desktop bridge is exposed. All dependencies
   // used by this handler are explicit mocks; dynamic code generation is disabled.
@@ -157,7 +163,40 @@ test('edited questions warn before submission, duplicate clicks are ignored, and
   await pending;
   assert.equal(state.current[0], edited);
   assert.equal(state.current[1], other);
+  assert.match(state.notice, /적용 0문항.*본문 선택 대기 1문항/);
+  assert.equal(state.conflicts[0].question.text, 'late API result');
+  for (const accept of [true, false]) {
+    const resolved = resolveRecognition({ questions: state.current, conflicts: state.conflicts, recognitionNotice: state.notice }, state.conflicts[0], accept);
+    assert.equal(resolved.questions[0].text, accept ? 'late API result' : edited.text);
+    assert.equal(resolved.conflicts.length, 0);
+  }
   assertReleased(state);
+});
+
+test('response applies despite concurrent answer and standard edits, retaining both teacher fields', async () => {
+  const { state, question, run } = setup();
+  state.enhanceQuestionsWithVision = async () => {
+    state.current[0] = { ...question, answer: '③', answerSource: '직접 입력', standardCode: '[selected]', selectedSubjectKey: 'changed' };
+    return {questions:[{...question, text:'response', standardCode:'[suggested]'}], warnings:[], failures:[]};
+  };
+  await run();
+  assert.equal(state.current[0].text, 'response');
+  assert.equal(state.current[0].answer, '③');
+  assert.equal(state.current[0].answerSource, '직접 입력');
+  assert.equal(state.current[0].standardCode, '[selected]');
+  assert.equal(state.current[0].selectedSubjectKey, 'changed');
+  assert.equal(state.conflicts.length, 0);
+  assert.match(state.notice, /적용 1문항/);
+});
+
+test('batch reconciliation counts concurrent structural changes and preserves the changed questions', () => {
+  const { question, other } = setup();
+  const altered = {...question, questionCaptures:[{image:'changed crop'}]};
+  const next = receiveRecognition({ questions:[altered, other], conflicts:[], recognitionNotice:'' },
+    [question, other].map(source => ({source, question:{...source, text:'response'}})), '응답 완료 2/2문항');
+  assert.equal(next.questions[0], altered);
+  assert.equal(next.questions[1].text, 'response');
+  assert.match(next.recognitionNotice, /응답 완료 2\/2문항 · 적용 1문항 · 문항 경계 변경으로 적용 제외: 13번/);
 });
 
 test('changing the inspected question during recognition cannot redirect the completed result', async () => {

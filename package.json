@@ -1,6 +1,6 @@
 {
   "name": "munhang-map",
-  "version": "0.7.21",
+  "version": "0.7.22",
   "description": "PDF·HWPX 문항 분리·정답 연결·수식 복원·성취기준 분류 도구",
   "author": "문항맵",
   "license": "MIT",

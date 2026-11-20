@@ -75,7 +75,7 @@ $\sum_{k=1}^{5}a_k$의 값이다.
     assert.equal((html.match(/마지막 열/g)||[]).length,1);
   }
   const source=fs.readFileSync(path.join(__dirname,'../app/page.tsx'),'utf8');
-  const row=source.match(/<article key=\{`\$\{question.number\}-\$\{index\}`\}[\s\S]*?<\/article>/)?.[0];
+  const row=source.match(/<article\b[^\n]*추출 문항[\s\S]*?<\/article>/)?.[0];
   assert.ok(row,'semantic list row');
   assert.match(row,/aria-pressed=\{selected === index\}/);
   assert.match(row,/data-question-preview[^>]*tabIndex=\{0\}/);

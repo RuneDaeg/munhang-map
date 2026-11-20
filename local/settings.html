@@ -65,7 +65,7 @@
   <body>
     <header>
       <div class="brand"><span class="mark">문</span> 문항맵 API 연결</div>
-      <a href="/">문항맵으로 돌아가기 →</a>
+      <a href="/" data-return>문항맵으로 돌아가기 →</a>
     </header>
     <main>
       <aside id="document-security-warning" class="document-warning" role="note" aria-labelledby="document-security-title">
@@ -145,7 +145,7 @@
           </div>
           <p class="hint">기본 단가는 참고값이며 모델·요금제에 따라 달라질 수 있습니다. 공급자 가격표와 맞는지 확인해 주세요.</p>
           <div class="actions">
-            <a class="button-link" href="/">취소</a>
+            <a class="button-link" href="/" data-return>취소</a>
             <button id="save" type="submit">연결 저장</button>
           </div>
           <p id="message" role="status"></p>
@@ -181,6 +181,15 @@
       const save = document.querySelector('#save');
       let providers = {};
       let initialProvider = '';
+
+      if (new URLSearchParams(location.search).get('from') === 'workspace') {
+        document.querySelectorAll('[data-return]').forEach(link => {
+          link.addEventListener('click', event => {
+            event.preventDefault();
+            window.close();
+          });
+        });
+      }
 
       init().catch(showError);
 

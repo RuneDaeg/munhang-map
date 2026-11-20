@@ -1,8 +1,8 @@
 'use client';
 /* oxlint-disable next/no-img-element -- Local document images use data URLs; do not send them through an image optimizer. */
 
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
-import { splitFormattedText } from '@/lib/text-formatting';
+import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { splitPdfQuestion } from '@/lib/pdf-question-edit';
 import { validateExamQuestions } from '@/lib/question-validation';
 import { questionLabel } from '@/lib/question-context';
 import {
@@ -17,8 +17,6 @@ import {
   LayoutGrid,
   ListFilter,
   LoaderCircle,
-  MoreHorizontal,
-  PanelLeft,
   ScanSearch,
   ShieldAlert,
   Sparkles,
@@ -26,6 +24,7 @@ import {
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import {
   Empty,
   EmptyDescription,
@@ -47,6 +46,7 @@ import {
 } from '@/lib/pdf-analysis';
 import { enhanceQuestionsWithVision, getVisionStatus, openApiConnectionSettings, type VisionStatus } from '@/lib/vision-recognition';
 import { recognizeQuestionBatch, type BatchRecognitionProgress } from '@/lib/batch-recognition';
+import { receiveRecognition, resolveRecognition, type ReviewWorkspace } from '@/lib/recognition-merge';
 import { CaptureEditor } from '@/components/capture-editor';
 import { downloadReview, parseReview } from '@/lib/review-file';
 import type { QuestionCapture } from '@/lib/question-capture';
@@ -102,9 +102,20 @@ export default function Home() {
   const [editingCapture, setEditingCapture] = useState<number | null>(null);
   const [fileName, setFileName] = useState('예시 · 2026학년도 6월 모의평가_물리학Ⅰ.pdf');
   const [selected, setSelected] = useState(0);
-  const [questionData, setQuestionData] = useState(sampleQuestions);
+  const [reviewTab, setReviewTab] = useState('questions');
+  const [warningsOnly, setWarningsOnly] = useState(false);
+  const [inlineOpen, setInlineOpen] = useState(true);
+  const [wideReview, setWideReview] = useState(false);
+  const [workspace, setWorkspace] = useState<ReviewWorkspace>({
+    questions: sampleQuestions, conflicts: [], recognitionNotice: '',
+  });
+  const questionData = workspace.questions;
+  function setQuestionData(update: (current: AnalyzedQuestion[]) => AnalyzedQuestion[]) {
+    setWorkspace(current => ({ ...current, questions: update(current.questions) }));
+  }
   const [pageCount, setPageCount] = useState(24);
-  const [status, setStatus] = useState<'ready' | 'analyzing' | 'error'>('ready');
+  const [status, setStatus] = useState<'ready' | 'analyzing'>('ready');
+  const [loadingFileName, setLoadingFileName] = useState('');
   const [error, setError] = useState('');
   const [qualityWarning, setQualityWarning] = useState('');
   const [exportOpen, setExportOpen] = useState(false);
@@ -125,7 +136,6 @@ export default function Home() {
   const [recognizingQuestion, setRecognizingQuestion] = useState<number | null>(null);
   const [batchRunning, setBatchRunning] = useState(false);
   const [batchProgress, setBatchProgress] = useState<BatchRecognitionProgress | null>(null);
-  const [batchMessage, setBatchMessage] = useState('');
   const [batchStopping, setBatchStopping] = useState(false);
   const batchStopRef = useRef(false);
   const [analysisState, setAnalysisState] = useState<ProgressState | null>(null);
@@ -140,14 +150,24 @@ export default function Home() {
   const canSaveReview = !isDemo && questionData.length > 0 && (sourcePages.length > 0 || isHwpx);
 
   useEffect(() => {
+    const query = window.matchMedia('(min-width: 80rem)');
+    const sync = () => setWideReview(query.matches);
+    sync();
+    query.addEventListener('change', sync);
+    return () => query.removeEventListener('change', sync);
+  }, []);
+
+  function resetReviewView() {
+    setReviewTab('questions');
+    setWarningsOnly(false);
+    setInlineOpen(true);
+  }
+
+  useEffect(() => {
     void loadAchievementStandards().then((items) => {
       setStandards(items);
       setQuestionData((current) => current.map((question) => classifyQuestion(question, items)));
     }).catch(() => undefined);
-  }, []);
-
-  useEffect(() => {
-    void getVisionStatus().then(applyVisionStatus).catch(() => undefined);
   }, []);
 
   function applyVisionStatus(vision: VisionStatus) {
@@ -160,6 +180,23 @@ export default function Home() {
     setDesktopMode(Boolean(vision.desktop));
     setLocalMode(Boolean(vision.local && !vision.desktop));
   }
+
+  useEffect(() => {
+    let latest = 0;
+    function refresh() {
+      const request = ++latest;
+      void getVisionStatus().then(status => { if (request === latest) applyVisionStatus(status); }).catch(() => undefined);
+    }
+    function whenVisible() { if (document.visibilityState === 'visible') refresh(); }
+    refresh();
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', whenVisible);
+    return () => {
+      latest++;
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', whenVisible);
+    };
+  }, []);
 
   useEffect(() => {
     type Context = { registerTool: (tool: unknown, options?: { signal?: AbortSignal }) => void | Promise<void> };
@@ -185,6 +222,7 @@ export default function Home() {
           const number = Number((input as { questionNumber?: number }).questionNumber);
           const index = questionData.findIndex((question) => question.number === number);
           if (index < 0) throw new Error('해당 문항 번호가 없습니다.');
+          resetReviewView();
           setSelected(index);
           return { selectedQuestion: number };
         },
@@ -200,21 +238,24 @@ export default function Home() {
     if (!/\.(pdf|hwpx)$/i.test(file.name)) { setError('시험지는 PDF 또는 HWPX 파일을 선택해 주세요.'); return; }
     if (file.size > 64 * 1024 * 1024) { setError('시험지 파일은 64MB 이하로 나누어 선택하세요.'); return; }
     operationRef.current = true;
-    setFileName(file.name); setSourcePages([]); setEditingCapture(null); setQuestionData([]); setPageCount(0);
-    setStatus('analyzing'); setAnalysisProgress(0); setAnalysisState(null); setIsDemo(false);
-    setError(''); setQualityWarning(''); setVisionError(''); setVisionProgress(''); setBankMessage(''); setSelected(0);
-    setBatchMessage(''); setBatchProgress(null); setAnswerMessage('');
+    setStatus('analyzing'); setAnalysisProgress(0); setAnalysisState(null);
+    setError(''); setLoadingFileName(file.name); setVisionProgress(`${file.name} 불러오는 중`);
     try {
       const result = await runExamAnalysis(file, (progress) => {
         setAnalysisState(progress); setAnalysisProgress(progress.percent); setVisionProgress(progress.detail);
       });
       setPageCount(result.pageCount); setSourcePages(result.sourcePages); setStandards(result.catalog);
-      setQualityWarning(result.qualityWarning); setQuestionData(result.questions);
+      setWorkspace({ questions: result.questions, conflicts: [], recognitionNotice: '' });
+      setFileName(file.name); setQualityWarning(result.qualityWarning); setIsDemo(false);
+      setSelected(0); resetReviewView(); setEditingCapture(null);
+      setVisionError(''); setBankMessage(''); setAnswerMessage(''); setBatchProgress(null);
       setVisionProgress(''); setStatus('ready');
       void getVisionStatus().then(applyVisionStatus).catch(() => undefined);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '파일 분석 중 오류가 발생했습니다.'); setStatus('error');
-    } finally { operationRef.current = false; }
+      const message = reason instanceof Error ? reason.message : '파일 분석 중 오류가 발생했습니다.';
+      setError(`${file.name} 열기 실패 · ${message} 기존 작업을 유지했습니다.`);
+      setVisionProgress(''); setStatus('ready');
+    } finally { setLoadingFileName(''); operationRef.current = false; }
   }
 
   async function saveCurrentToBank() {
@@ -248,9 +289,8 @@ export default function Home() {
   async function handleReviewFile(file: File) {
     if (operationRef.current || recognizingQuestion !== null || savingBank) return;
     if (file.size > 80_000_000) { setError('검토 파일은 80MB 이하만 열 수 있습니다.'); return; }
-    operationRef.current = true; setAnalysisState(null); setAnalysisProgress(0); setBankMessage('');
-    setBatchMessage(''); setBatchProgress(null); setAnswerMessage('');
-    setStatus('analyzing'); setEditingCapture(null); setError(''); setVisionError(''); setVisionProgress('저장한 캡처 범위를 불러오는 중');
+    operationRef.current = true; setAnalysisState(null); setAnalysisProgress(0);
+    setStatus('analyzing'); setError(''); setLoadingFileName(file.name); setVisionProgress('저장한 캡처 범위를 불러오는 중');
     try {
       const review = await parseReview(await file.text());
       const catalog = standards.length ? standards : await loadAchievementStandards();
@@ -259,10 +299,15 @@ export default function Home() {
         const chosen = classified.standardCandidates?.find((candidate) => candidate.code === question.standardCode);
         return chosen ? { ...classified, standardCode: chosen.code, standard: chosen.standard, confidence: chosen.confidence, domain: chosen.domain } : classified;
       });
-      setStandards(catalog); setQuestionData(questions); setSourcePages(review.sourcePages); setFileName(review.fileName);
-      setPageCount(review.sourcePages.length); setSelected(0); setIsDemo(false); setQualityWarning(''); setStatus('ready');
-    } catch (reason) { setError(reason instanceof Error ? reason.message : '검토 파일을 열지 못했습니다.'); setStatus('error'); }
-    finally { setVisionProgress(''); operationRef.current = false; }
+      setWorkspace({ questions, conflicts: [], recognitionNotice: '' });
+      setStandards(catalog); setSourcePages(review.sourcePages); setFileName(review.fileName);
+      setPageCount(review.sourcePages.length); setSelected(0); resetReviewView(); setIsDemo(false); setQualityWarning(''); setStatus('ready');
+      setEditingCapture(null); setVisionError(''); setBankMessage(''); setBatchProgress(null); setAnswerMessage('');
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : '검토 파일을 열지 못했습니다.';
+      setError(`${file.name} 열기 실패 · ${message} 기존 작업을 유지했습니다.`); setStatus('ready');
+    }
+    finally { setLoadingFileName(''); setVisionProgress(''); operationRef.current = false; }
   }
 
   function saveCaptureEdits(captures: QuestionCapture[]) {
@@ -296,7 +341,6 @@ export default function Home() {
     const question = questionData[selected];
     if (!question?.questionCaptures?.length || operationRef.current || recognizingQuestion !== null || savingBank || status === 'analyzing') return;
     operationRef.current = true;
-    const targetIndex=selected;
     setRecognizingQuestion(question.number);
     setVisionError('');
     try {
@@ -316,7 +360,7 @@ export default function Home() {
       const catalog = standards.length ? standards : await loadAchievementStandards();
       setStandards(catalog);
       const enhanced = classifyQuestion(result.questions[0], catalog);
-      setQuestionData((current) => current.map((item, index) => index === targetIndex && item===question ? {...enhanced,textEdited:enhanced.text===question.text ? question.textEdited : false} : item));
+      setWorkspace(current => receiveRecognition(current, [{ source: question, question: enhanced }], `${questionLabel(question)} API 판독 완료`));
       void getVisionStatus().then(applyVisionStatus).catch(() => undefined);
     } catch (reason) {
       setVisionError(reason instanceof Error ? reason.message : '선택 문항의 API 판독을 완료하지 못했습니다.');
@@ -330,7 +374,7 @@ export default function Home() {
     if (operationRef.current || busy || isDemo || !questionData.length || status !== 'ready') return;
     operationRef.current = true;
     setBatchRunning(true); setBatchStopping(false); batchStopRef.current = false;
-    setVisionError(''); setBatchMessage(''); setBatchProgress(null);
+    setVisionError(''); setBatchProgress(null);
     const snapshot = [...questionData];
     try {
       const missing = snapshot.filter(question => !question.questionCaptures?.length);
@@ -354,12 +398,10 @@ export default function Home() {
         shouldStop: () => batchStopRef.current,
         onProgress: progress => { setBatchProgress(progress); setRecognizingQuestion(progress.current); },
       });
-      const updates = new Map(result.updates.map(({ source, question }) => [source, { ...classifyQuestion(question, catalog), textEdited: question.text === source.text ? source.textEdited : false }]));
-      // Match the immutable source object, not the current selection or list index.
-      // Edits, merges, splits and capture changes made while waiting remain intact.
-      setQuestionData(current => current.map(question => updates.get(question) ?? question));
+      const updates = result.updates.map(({ source, question }) => ({ source, question: classifyQuestion(question, catalog) }));
       const remaining = result.total - result.attempted;
-      setBatchMessage(`${result.stopped ? '전체 판독 중단' : result.failures.length ? '오류로 전체 판독 중단' : '전체 API 판독 처리 완료'} · 응답 완료 ${result.completed}/${result.total}문항 · 실패 ${result.failures.length}문항 · 미요청 ${remaining}문항. 진행 중 직접 수정한 문항은 덮어쓰지 않습니다. 원문과 대조해 주세요.`);
+      const summary = `${result.stopped ? '전체 판독 중단' : result.failures.length ? '오류로 전체 판독 중단' : '전체 API 판독 처리 완료'} · 응답 완료 ${result.completed}/${result.total}문항 · 실패 ${result.failures.length}문항 · 미요청 ${remaining}문항`;
+      setWorkspace(current => receiveRecognition(current, updates, summary));
       if (result.failures.length || result.warnings.length) setVisionError([...result.failures, ...result.warnings].join(' '));
       void getVisionStatus().then(applyVisionStatus).catch(() => undefined);
     } catch (reason) {
@@ -371,18 +413,9 @@ export default function Home() {
 
   function splitSelectedQuestion(position: number) {
     const question = questionData[selected];
-    if (!question || position < 8 || position > question.text.length - 8) return;
-    const [left,right] = splitFormattedText(question.text,position);
-    const firstText = left.trim();
-    let secondText = right.trim();
-    const marker = secondText.match(/^(\d{1,2})\s*[.)]\s*/);
-    const secondSourceNumber = marker ? Number(marker[1]) : (question.sourceQuestionNumber ?? question.number) + 1;
-    const secondNumber = question.sourceQuestionNumber === undefined ? secondSourceNumber : Math.max(...questionData.map(item => item.number)) + 1;
-    // Keep the own-question anchor after a manual split of a shared passage.
-    if (!marker) secondText = `${secondSourceNumber}. ${secondText}`;
-    const captureWarning = '텍스트를 수동으로 나눴습니다. 캡처에는 분리 전 영역이 보존되어 있으므로 범위를 확인해 주세요.';
-    const first = classifyQuestion({ ...question, text: firstText, captureWarning, captureReviewed: false, textEdited:true, visualChoices:undefined, analysisWarning:undefined, figureImage: undefined, visionEnhanced: false }, standards);
-    const second = classifyQuestion({ ...question, answer: undefined, answerSource: undefined, number: secondNumber, sourceQuestionNumber: question.sourceQuestionNumber === undefined ? undefined : secondSourceNumber, text: secondText, captureWarning, captureReviewed: false, textEdited:true, visualChoices:undefined, analysisWarning:undefined, figureImage: undefined, visionEnhanced: false, type: question.type.replace('자동 추출', '수동 분리') }, standards);
+    if (!question || question.sourceFormat === 'hwpx' || position < 8 || position > question.text.length - 8) return;
+    if (questionData.length >= 200) { setError('PDF는 최대 200문항까지 나눌 수 있습니다.'); return; }
+    const [first, second] = splitPdfQuestion(question, position, questionData).map(part => classifyQuestion(part, standards));
     setQuestionData((current) => [...current.slice(0, selected), first, second, ...current.slice(selected + 1)]);
     setSelected(selected + 1);
   }
@@ -392,14 +425,75 @@ export default function Home() {
     const previous = questionData[selected - 1];
     const current = questionData[selected];
     const questionCaptures = [...(previous.questionCaptures ?? []), ...(current.questionCaptures ?? [])].filter((capture, index, all) => all.findIndex((item) => item.image === capture.image) === index);
-    const merged = classifyQuestion({ ...previous, text: `${previous.text}\n${current.number}. ${current.text}`, questionCaptures, captureReviewed: false, captureWarning: previous.captureWarning ?? current.captureWarning, textEdited:true, visualChoices:undefined, analysisWarning:undefined, figureImage: undefined, visionEnhanced: false, type: previous.type.replace('자동 추출', '수동 병합') }, standards);
+    const sourceNumber = current.sourceQuestionNumber ?? current.number;
+    const continuation = new RegExp(`^\\s*${sourceNumber}\\s*[.)]`).test(current.text) ? current.text : `${sourceNumber}. ${current.text}`;
+    const merged = classifyQuestion({ ...previous, text: `${previous.text}\n${continuation}`, assessmentText: undefined, questionCaptures, captureReviewed: false, captureWarning: previous.captureWarning ?? current.captureWarning, textEdited:true, visualChoices:undefined, analysisWarning:undefined, figureImage: undefined, visionEnhanced: false, type: previous.type.replace('자동 추출', '수동 병합') }, standards);
     setQuestionData((items) => [...items.slice(0, selected - 1), merged, ...items.slice(selected + 1)]);
     setSelected(selected - 1);
   }
 
   const standardCount = new Set(questionData.map((question) => question.standardCode)).size;
-  const needsReview = checkedQuestions.filter(question=>question.validationFlags?.length).length;
+  const allIndices = checkedQuestions.map((_, index) => index);
+  const flaggedIndices = allIndices.filter(index => checkedQuestions[index].validationFlags?.length);
+  const needsReview = flaggedIndices.length;
   const noFlags = checkedQuestions.length - needsReview;
+  // Keep an edited row mounted when its last warning clears, until the teacher moves on.
+  const visibleIndices = warningsOnly ? allIndices.filter(index => index === selected || checkedQuestions[index].validationFlags?.length) : allIndices;
+  const position = visibleIndices.indexOf(selected);
+  const activeStep = exportOpen ? 2 : status === 'analyzing' || isDemo || !questionData.length ? 0 : 1;
+  const nextFlagged = flaggedIndices.find(index => index > selected) ?? flaggedIndices[0];
+
+  function openQuestion(index: number, revealRow = false) {
+    setSelected(index);
+    setInlineOpen(true);
+    requestAnimationFrame(() => {
+      if (!wideReview) {
+        const inspector = document.getElementById('question-inspector');
+        inspector?.focus({ preventScroll: true });
+        inspector?.scrollIntoView({ block: 'start' });
+      } else if (revealRow) {
+        document.getElementById(`question-select-${index}`)?.focus();
+      }
+    });
+  }
+
+  function closeInlineInspector() {
+    setInlineOpen(false);
+    requestAnimationFrame(() => {
+      const trigger = document.getElementById(`question-select-${selected}`);
+      trigger?.focus({ preventScroll: true });
+      trigger?.scrollIntoView({ block: 'center' });
+    });
+  }
+
+  function toggleWarnings() {
+    setReviewTab('questions');
+    setWarningsOnly(!warningsOnly);
+    if (!warningsOnly && needsReview && !flaggedIndices.includes(selected)) setSelected(flaggedIndices[0]);
+  }
+
+  const currentQuestion = checkedQuestions[selected];
+  const inspector = currentQuestion && (
+    <QuestionInspector key={`${fileName}-${selected}`}
+      question={currentQuestion}
+      catalog={standards}
+      canMerge={selected > 0}
+      recognizing={recognizingQuestion === currentQuestion.number}
+      canRecognize={!busy && Boolean(currentQuestion.questionCaptures?.length)}
+      canEditCapture={!busy && sourcePages.length > 0}
+      onEditCapture={() => setEditingCapture(selected)}
+      onTextChange={updateSelectedText}
+      onAnswerChange={updateSelectedAnswer}
+      onStandardChange={updateSelectedStandard}
+      onSubjectChange={updateSelectedSubject}
+      onRefresh={refreshSelectedCandidates}
+      onRecognize={() => void recognizeSelectedQuestion()}
+      onSplit={splitSelectedQuestion}
+      onMerge={mergeWithPrevious}
+      onCloseInline={wideReview ? undefined : closeInlineInspector}
+      onNextFlagged={nextFlagged !== undefined && nextFlagged !== selected ? () => openQuestion(nextFlagged, true) : undefined}
+    />
+  );
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -409,28 +503,38 @@ export default function Home() {
       </div>
       <header className="sticky top-0 z-30 flex h-16 items-center border-b bg-background/90 px-4 backdrop-blur-xl lg:px-7">
         <div className="flex min-w-0 flex-1 items-center gap-3">
-          <button className="grid size-9 place-items-center rounded-xl bg-primary text-primary-foreground" aria-label="메뉴 열기">
-            <PanelLeft className="size-4" />
-          </button>
+          <span aria-hidden="true" className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground"><FileText className="size-4" /></span>
           <div className="flex items-baseline gap-2">
             <span className="text-lg font-extrabold tracking-[-0.04em]">문항맵</span>
             <span className="text-xs text-muted-foreground" aria-label={`앱 버전 ${version}`}>v{version}</span>
             <span className="hidden text-xs text-muted-foreground sm:inline">성취기준 분류 작업실</span>
           </div>
         </div>
-        <div className="hidden items-center gap-1 rounded-full bg-muted p-1 text-sm md:flex">
+        <ol aria-label="작업 단계" className="hidden items-center gap-1 rounded-full bg-muted p-1 text-sm md:flex">
           {['파일 불러오기', '문항 검토', '내보내기'].map((step, index) => (
-            <div key={step} className={`flex items-center gap-2 rounded-full px-3 py-1.5 ${index === 1 ? 'bg-white font-semibold shadow-sm' : 'text-muted-foreground'}`}>
-              <span className={`grid size-5 place-items-center rounded-full text-[11px] ${index === 0 ? 'bg-primary text-white' : index === 1 ? 'bg-accent text-accent-foreground' : 'bg-border'}`}>
-                {index === 0 ? <Check className="size-3" /> : index + 1}
+            <li key={step} aria-current={index === activeStep ? 'step' : undefined} className={`flex items-center gap-2 rounded-full px-3 py-1.5 ${index === activeStep ? 'bg-white font-semibold shadow-sm' : 'text-muted-foreground'}`}>
+              <span aria-hidden="true" className={`grid size-5 place-items-center rounded-full text-[11px] ${index < activeStep ? 'bg-primary text-white' : index === activeStep ? 'bg-accent text-accent-foreground' : 'bg-border'}`}>
+                {index < activeStep ? <Check className="size-3" /> : index + 1}
               </span>
               {step}
-            </div>
+            </li>
           ))}
-        </div>
+        </ol>
         <div className="flex flex-1 justify-end gap-2">
           <VersionCheck current={version} />
-          <Button variant="ghost" size="icon" aria-label="도움말"><CircleHelp /></Button>
+          <Dialog>
+            <DialogTrigger render={<Button variant="ghost" size="icon" aria-label="도움말" />}><CircleHelp /></DialogTrigger>
+            <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-md" showCloseButton={false}>
+              <DialogTitle>문항맵 사용법</DialogTitle>
+              <DialogDescription>시험지 한 부를 불러와 검토하고 수업 자료로 저장하는 순서입니다.</DialogDescription>
+              <ol className="list-decimal space-y-3 pl-5 leading-6">
+                <li><strong>시험지 불러오기.</strong> PDF나 HWPX를 선택하세요. 첫 분석은 내 컴퓨터에서 진행합니다.</li>
+                <li><strong>문항 검토.</strong> 문항 번호를 눌러 본문·정답·성취기준을 고칩니다. ‘확인 필요만 보기’를 누르면 경고가 있는 문항부터 확인할 수 있습니다.</li>
+                <li><strong>저장 및 내보내기.</strong> 이어서 편집하려면 ‘검토 JSON 저장’을, 여러 시험지의 문항을 모으려면 ‘문제함에 저장’을 누르세요. ‘내보내기’에서 문서나 캡처 이미지를 받습니다.</li>
+              </ol>
+              <DialogClose render={<Button variant="outline" />}>닫기</DialogClose>
+            </DialogContent>
+          </Dialog>
         </div>
       </header>
 
@@ -449,13 +553,12 @@ export default function Home() {
         <aside aria-label="현재 파일·API 설정" className="workspace-sidebar rounded-[22px] p-5 text-white lg:sticky lg:top-[88px] lg:h-[calc(100vh-112px)] lg:overflow-y-auto">
           <div className="flex items-center justify-between">
             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-white/55">현재 작업</p>
-            <Button variant="ghost" size="icon-sm" className="text-white hover:bg-white/10 hover:text-white" aria-label="더보기"><MoreHorizontal /></Button>
           </div>
           <button aria-label="현재 파일 정보 · 다른 PDF/HWPX 선택" disabled={busy} onClick={() => inputRef.current?.click()} className="mt-3 w-full rounded-2xl border border-white/12 bg-white/7 p-4 text-left transition hover:bg-white/10 disabled:opacity-60">
             <div className="flex items-start gap-3">
               <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-accent text-accent-foreground"><FileText className="size-5" /></span>
               <div className="min-w-0">
-                <p className="line-clamp-2 text-sm font-semibold leading-5">{fileName}</p>
+                <p className="line-clamp-2 text-sm font-semibold leading-5">{loadingFileName || fileName}</p>
                 <p className="mt-1 text-xs text-white/50">{status === 'analyzing' ? `분석 중 · ${analysisProgress}%` : isHwpx ? `HWPX 구조 추출 · 문항 ${questionData.length}개` : pageCount ? `${pageCount}쪽 · 문항 ${questionData.length}개` : '분석 결과 없음'}</p>
               </div>
             </div>
@@ -511,34 +614,49 @@ export default function Home() {
           <div className="flex flex-col gap-4 rounded-[22px] border bg-card p-4 shadow-sm sm:p-5">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <div>
-                <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">{status === 'analyzing' ? <LoaderCircle className="size-4 animate-spin text-primary" /> : <ScanSearch className="size-4 text-primary" />} {status === 'analyzing' ? (visionProgress || `시험지에서 문항을 찾는 중 · ${analysisProgress}%`) : status === 'error' ? '분석을 완료하지 못했습니다' : isDemo ? '예시 분석 결과' : '시험지 분석 완료'}</div>
+                <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">{status === 'analyzing' ? <LoaderCircle className="size-4 animate-spin text-primary" /> : <ScanSearch className="size-4 text-primary" />} {status === 'analyzing' ? (visionProgress || `시험지에서 문항을 찾는 중 · ${analysisProgress}%`) : isDemo ? '예시 분석 결과' : '시험지 분석 완료'}</div>
                 <h1 className="mt-1 text-2xl font-extrabold tracking-[-0.04em] sm:text-[28px]">{status === 'analyzing' ? 'API 없이 문항을 분석하고 있습니다' : '문항과 성취기준을 확인하세요'}</h1>
                 {!isDemo && questionData.some((question) => question.examSubject) && <p className="mt-2 text-sm font-medium text-primary">시험지 상단 과목 반영: {[...new Set(questionData.map((question) => question.examSubject?.label).filter(Boolean))].join(' · ')}</p>}
-                {error && <p role="alert" className="mt-2 max-w-2xl text-sm font-medium leading-6 text-destructive">{error} 다른 PDF/HWPX를 선택하면 새로 분석합니다.</p>}
+                {error && <p role="alert" className="mt-2 max-w-2xl text-sm font-medium leading-6 text-destructive">{error}</p>}
                 {qualityWarning && <output className="mt-2 block max-w-2xl rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium leading-6 text-amber-800">{qualityWarning}</output>}
                 {visionError && <p role="alert" className="mt-2 max-w-2xl rounded-lg bg-red-50 px-3 py-2 text-sm font-medium leading-6 text-red-700">{visionError}</p>}
-                {(batchRunning || batchMessage) && <div className="mt-2 max-w-2xl rounded-lg border bg-muted/40 p-3">
+                {(batchRunning || workspace.recognitionNotice) && <div className="mt-2 max-w-2xl rounded-lg border bg-muted/40 p-3">
                   <output aria-live="polite" className="block text-sm font-medium">{batchRunning
                     ? batchProgress ? `전체 API 판독 · 응답 완료 ${batchProgress.completed}/${batchProgress.total}문항${batchProgress.current !== null ? ` · ${questionLabel(questionData.find(item => item.number === batchProgress.current) ?? { number: batchProgress.current })} 요청 중` : ''}${batchStopping ? ' · 현재 문항 후 중단 대기' : ''}` : '전체 API 판독 준비 중'
-                    : batchMessage}</output>
+                    : workspace.recognitionNotice}</output>
                   {batchRunning && batchProgress && <Button size="sm" variant="outline" className="mt-2" disabled={batchStopping} onClick={() => { batchStopRef.current = true; setBatchStopping(true); }}>현재 문항 후 중단</Button>}
                 </div>}
+                {workspace.conflicts.map(conflict => {
+                  const current = questionData.find(item => item.number === conflict.source.number);
+                  if (!current) return null;
+                  return <details key={current.number} className="mt-2 max-w-2xl rounded-lg border p-3 text-sm">
+                    <summary className="cursor-pointer font-semibold">{questionLabel(current)} · 수정한 본문과 API 판독본 비교</summary>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <div><strong>현재 수정본</strong><p className="max-h-56 overflow-auto whitespace-pre-wrap break-words">{current.text}</p></div>
+                      <div><strong>API 판독본</strong><p className="max-h-56 overflow-auto whitespace-pre-wrap break-words">{conflict.question.text}</p></div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button variant="outline" size="sm" onClick={() => setWorkspace(value => resolveRecognition(value, conflict, false))}>직접 수정본 유지</Button>
+                      <Button size="sm" onClick={() => setWorkspace(value => resolveRecognition(value, conflict, true))}>API 판독본 적용</Button>
+                    </div>
+                  </details>;
+                })}
                 {bankMessage && <output className="mt-2 block max-w-2xl whitespace-pre-wrap break-words text-sm leading-6 text-primary">{bankMessage}</output>}
                 {answerMessage && <output aria-live="polite" className="mt-2 block text-sm text-primary">{answerMessage}</output>}
                 {isHwpx && <p className="mt-2 max-w-2xl text-sm text-amber-900">HWPX는 문서 구조를 읽습니다. 원본 쪽수·페이지 캡처·배치를 재현하지 않으므로 캡처/API 이미지 판독이 필요하면 PDF를 사용하세요.</p>}
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" disabled={busy} onClick={() => inputRef.current?.click()}><Upload /> PDF·HWPX 불러오기</Button>
+                <Button variant={isDemo ? 'default' : 'outline'} disabled={busy} onClick={() => inputRef.current?.click()}><Upload /> {isDemo ? '내 시험지 불러오기' : 'PDF·HWPX 불러오기'}</Button>
                 <Button variant="outline" disabled={busy || isDemo || status !== 'ready' || !questionData.length} onClick={() => setAnswerOpen(true)}>정답 파일 연결</Button>
                 <Button variant="outline" title={isHwpx ? '이미지 판독에는 원본 PDF의 페이지 캡처가 필요합니다.' : undefined} disabled={busy || isDemo || isHwpx || status !== 'ready' || !questionData.length} onClick={() => void recognizeAllQuestions()}>{batchRunning ? <LoaderCircle className="animate-spin" /> : <Sparkles />}{batchRunning ? '전체 API 판독 중…' : '전체 문항 API 판독'}</Button>
                 <Button variant="outline" onClick={() => reviewInputRef.current?.click()} disabled={busy}>검토 파일 열기</Button>
                 <Button variant="outline" onClick={() => downloadReview(fileName, checkedQuestions, sourcePages)} disabled={busy || !canSaveReview}>검토 JSON 저장</Button>
                 <Button variant="outline" onClick={() => void saveCurrentToBank()} disabled={busy || !canSaveReview || status !== 'ready'}>{savingBank ? <LoaderCircle className="animate-spin" /> : <FolderOpen />}{savingBank ? '문제함 저장 중…' : '문제함에 저장'}</Button>
-                <Button onClick={() => setExportOpen(true)} disabled={busy || !questionData.length} className="bg-primary px-4 text-primary-foreground hover:bg-primary/90"><Download /> 내보내기</Button>
+                <Button variant={isDemo ? 'outline' : 'default'} onClick={() => setExportOpen(true)} disabled={busy || !questionData.length}><Download /> 내보내기</Button>
               </div>
             </div>
 
-            {status === 'analyzing' ? <AnalysisProgress progress={analysisState} detail={visionProgress} /> : <Tabs defaultValue="questions" className="mt-1">
+            {status === 'analyzing' ? <AnalysisProgress progress={analysisState} detail={visionProgress} /> : <Tabs value={reviewTab} onValueChange={value => { setReviewTab(String(value)); if (value === 'standards') setWarningsOnly(false); }} className="mt-1">
               <div className="flex flex-col gap-3 border-b sm:flex-row sm:items-center sm:justify-between">
                 <TabsList variant="line" className="h-10">
                   <TabsTrigger value="questions" className="px-3"><LayoutGrid /> 문항별 보기</TabsTrigger>
@@ -546,7 +664,7 @@ export default function Home() {
                 </TabsList>
                 <div className="flex items-center gap-2 pb-3 sm:pb-0">
                   <Badge variant="secondary" className="bg-emerald-50 text-emerald-700">자동 경고 없음 {noFlags}</Badge>
-                  <Badge variant="secondary" className="bg-amber-50 text-amber-700">확인 필요 {needsReview}</Badge>
+                  <Button size="sm" variant={warningsOnly ? 'default' : 'outline'} disabled={!needsReview && !warningsOnly} aria-pressed={warningsOnly} onClick={toggleWarnings}><ListFilter />확인 필요만 보기 {needsReview}</Button>
                 </div>
               </div>
 
@@ -554,9 +672,10 @@ export default function Home() {
                 <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
                   <div className="min-w-0 overflow-hidden rounded-2xl border bg-background">
                     <div className="flex items-center justify-between border-b px-4 py-3">
-                      <div className="flex items-center gap-2"><FolderOpen className="size-4 text-muted-foreground" /><span className="text-sm font-semibold">문항 목록</span><span className="text-xs text-muted-foreground">{questionData.length}개</span></div>
-                      <div className="flex items-center gap-1"><Button onClick={() => setSelected((value) => Math.max(0, value - 1))} disabled={selected === 0} variant="ghost" size="icon-sm" aria-label="이전 문항"><ChevronLeft /></Button><span className="px-1 text-xs tabular-nums">{selected + 1} / {questionData.length}</span><Button onClick={() => setSelected((value) => Math.min(questionData.length - 1, value + 1))} disabled={selected >= questionData.length - 1} variant="ghost" size="icon-sm" aria-label="다음 문항"><ChevronRight /></Button></div>
+                      <div className="flex items-center gap-2"><FolderOpen className="size-4 text-muted-foreground" /><span className="text-sm font-semibold">{warningsOnly ? '확인할 문항' : '문항 목록'}</span><span className="text-xs text-muted-foreground">{visibleIndices.length}개</span></div>
+                      <div className="flex items-center gap-1"><Button onClick={() => openQuestion(visibleIndices[position - 1], true)} disabled={position <= 0} variant="ghost" size="icon-sm" aria-label="이전 문항"><ChevronLeft /></Button><span className="px-1 text-xs tabular-nums">{position + 1} / {visibleIndices.length}</span><Button onClick={() => openQuestion(visibleIndices[position + 1], true)} disabled={position < 0 || position >= visibleIndices.length - 1} variant="ghost" size="icon-sm" aria-label="다음 문항"><ChevronRight /></Button></div>
                     </div>
+                    {warningsOnly && !checkedQuestions[selected]?.validationFlags?.length && <output className="block px-4 py-2 text-sm text-muted-foreground">현재 문항의 경고가 해소되었습니다. 편집을 마칠 때까지 이 문항을 표시합니다.</output>}
                     <div className="divide-y">
                       {!questionData.length && (
                         <Empty className="min-h-[360px] border-0">
@@ -567,12 +686,18 @@ export default function Home() {
                           </EmptyHeader>
                         </Empty>
                       )}
-                      {checkedQuestions.map((question, index) => (
-                        <article key={`${question.number}-${index}`} onClick={() => setSelected(index)} aria-label={`${questionLabel(question)} 추출 문항`} className={`group grid w-full grid-cols-[48px_minmax(0,1fr)] gap-3 p-4 text-left transition sm:grid-cols-[54px_minmax(0,1fr)_auto] ${selected === index ? 'bg-selected' : 'hover:bg-muted/50'}`}>
-                          <button type="button" onClick={() => setSelected(index)} aria-label={`${questionLabel(question)} 문항 정보 보기`} aria-pressed={selected === index} className={`grid size-11 place-items-center rounded-2xl text-lg font-extrabold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${selected === index ? 'bg-primary text-white' : 'bg-muted text-foreground'}`}>{question.sourceQuestionLabel ? '예제' : String(question.sourceQuestionNumber ?? question.number).padStart(2, '0')}</button>
+                      {visibleIndices.map(index => {
+                        const question = checkedQuestions[index];
+                        return <Fragment key={`${question.number}-${index}`}>
+                        {/* The number button handles keyboard activation; the article adds a larger pointer target. */}
+                        {/* oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions */}
+                        <article onClick={() => { if (!window.getSelection()?.toString()) openQuestion(index); }} aria-label={`${questionLabel(question)} 추출 문항`} className={`group grid w-full grid-cols-[48px_minmax(0,1fr)] gap-3 p-4 text-left transition sm:grid-cols-[54px_minmax(0,1fr)_auto] ${selected === index ? 'bg-selected' : 'hover:bg-muted/50'}`}>
+                          <button type="button" id={`question-select-${index}`} onClick={event => { event.stopPropagation(); openQuestion(index); }} aria-label={`${questionLabel(question)} 문항 정보 보기`} aria-pressed={selected === index} aria-expanded={wideReview ? undefined : selected === index && inlineOpen} aria-controls={selected === index && (wideReview || inlineOpen) ? 'question-inspector' : undefined} className={`grid size-11 scroll-mt-20 place-items-center rounded-2xl text-lg font-extrabold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${selected === index ? 'bg-primary text-white' : 'bg-muted text-foreground'}`}>{question.sourceQuestionLabel ? '예제' : String(question.sourceQuestionNumber ?? question.number).padStart(2, '0')}</button>
                           <div className="min-w-0">
                             <span className="flex flex-wrap items-center gap-2"><span className="text-xs font-medium text-muted-foreground">{question.type}{question.sectionLabel ? ` · ${question.sectionLabel}` : ''}{question.sourceQuestionLabel ? ` · ${question.sourceQuestionLabel}` : ''}</span><Badge variant="outline" className="h-5 border-primary/15 bg-primary/5 text-primary">{question.domain}</Badge>{countUnresolvedGlyphs(question.text) ? <Badge variant="secondary" className="h-5 bg-amber-100 text-amber-900">문자 복원 확인 필요</Badge> : question.visionEnhanced && <Badge variant="secondary" className="h-5 bg-emerald-50 text-emerald-700">수식·그림 인식</Badge>}</span>
-                            <div className="mt-2 min-w-0 overflow-x-auto text-[15px] font-medium leading-6 focus-visible:outline-2 focus-visible:outline-ring" data-question-preview role="group" aria-label={`${questionLabel(question)} 문항 내용`} tabIndex={0}><Suspense fallback={normalizeQuestionText(question.text)}><MathText text={question.text} compact sourceImages={question.sourceFormat === 'hwpx' ? question.sourceImages ?? [] : undefined} /></Suspense></div>
+                            {/* The preview is keyboard focusable for horizontal scrolling of wide tables and math. */}
+                            {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
+                            <section className="mt-2 min-w-0 overflow-x-auto text-[15px] font-medium leading-6 focus-visible:outline-2 focus-visible:outline-ring" data-question-preview aria-label={`${questionLabel(question)} 문항 내용`} tabIndex={0}><Suspense fallback={normalizeQuestionText(question.text)}><MathText text={question.text} compact sourceImages={question.sourceFormat === 'hwpx' ? question.sourceImages ?? [] : undefined} /></Suspense></section>
                           </div>
                           <span className="col-start-2 flex items-center gap-2 self-center sm:col-start-auto">
                             <span className={`size-2 rounded-full ${question.validationFlags?.length ? 'bg-amber-400' : 'bg-emerald-500'}`} />
@@ -580,12 +705,14 @@ export default function Home() {
                             <ArrowRight className="size-4 text-muted-foreground transition group-hover:translate-x-0.5" />
                           </span>
                         </article>
-                      ))}
+                        {!wideReview && inlineOpen && selected === index && inspector}
+                        </Fragment>;
+                      })}
                     </div>
                     <div className="border-t bg-muted/35 px-4 py-3 text-center text-xs text-muted-foreground">문항 텍스트와 추천 성취기준은 내보내기 전에 직접 수정할 수 있습니다</div>
                   </div>
 
-                  {checkedQuestions[selected] && <QuestionInspector key={`${fileName}-${selected}`} question={checkedQuestions[selected]} catalog={standards} canMerge={selected > 0} recognizing={recognizingQuestion === checkedQuestions[selected].number} canRecognize={!busy && Boolean(checkedQuestions[selected].questionCaptures?.length)} canEditCapture={!busy && sourcePages.length > 0} onEditCapture={() => setEditingCapture(selected)} onTextChange={updateSelectedText} onAnswerChange={updateSelectedAnswer} onStandardChange={updateSelectedStandard} onSubjectChange={updateSelectedSubject} onRefresh={refreshSelectedCandidates} onRecognize={() => void recognizeSelectedQuestion()} onSplit={splitSelectedQuestion} onMerge={mergeWithPrevious} />}
+                  {wideReview && inspector}
                 </div>
               </TabsContent>
 
@@ -618,7 +745,7 @@ export default function Home() {
   );
 }
 
-function QuestionInspector({ question, catalog, canMerge, recognizing, canRecognize, canEditCapture, onEditCapture, onTextChange, onAnswerChange, onStandardChange, onSubjectChange, onRefresh, onRecognize, onSplit, onMerge }: {
+function QuestionInspector({ question, catalog, canMerge, recognizing, canRecognize, canEditCapture, onEditCapture, onTextChange, onAnswerChange, onStandardChange, onSubjectChange, onRefresh, onRecognize, onSplit, onMerge, onCloseInline, onNextFlagged }: {
   question: AnalyzedQuestion;
   catalog: StandardRecord[];
   canMerge: boolean;
@@ -634,6 +761,8 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canRecogn
   onRecognize: () => void;
   onSplit: (position: number) => void;
   onMerge: () => void;
+  onCloseInline?: () => void;
+  onNextFlagged?: () => void;
 }) {
   const textRef = useRef<QuestionEditorHandle>(null);
   const [cursor, setCursor] = useState(0);
@@ -656,11 +785,15 @@ function QuestionInspector({ question, catalog, canMerge, recognizing, canRecogn
     });
   }
   return (
-    <aside className="question-inspector overflow-hidden rounded-2xl border bg-background" aria-label={`${questionLabel(question)} 문항 정보`}>
+    <aside id="question-inspector" tabIndex={-1} className="question-inspector min-w-0 scroll-mt-20 overflow-hidden rounded-2xl border bg-background focus-visible:outline-2 focus-visible:outline-ring" aria-label={`${questionLabel(question)} 문항 정보`}>
       <div className="inspector-head shrink-0 p-5 text-white">
         <div className="flex items-center justify-between"><p className="text-sm font-semibold text-white/80">{questionLabel(question)} 문항 정보</p><Badge className="bg-white/12 text-white">후보 {standardCandidates.length}개</Badge></div>
         <p className="mt-5 font-mono text-2xl font-bold tracking-tight text-accent">{question.standardCode}</p>
         <p className="mt-2 text-lg font-bold">{question.domain}</p>
+        {(onNextFlagged || onCloseInline) && <div className="mt-3 flex flex-wrap gap-2">
+          {onNextFlagged && <Button variant="outline" size="sm" className="bg-background text-foreground" onClick={onNextFlagged}>다음 확인 문항 <ArrowRight /></Button>}
+          {onCloseInline && <Button variant="outline" size="sm" className="bg-background text-foreground" onClick={onCloseInline}>문항 정보 닫기</Button>}
+        </div>}
       </div>
       {/* The scrollable region needs a tab stop for keyboard-only scrolling. */}
       {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}

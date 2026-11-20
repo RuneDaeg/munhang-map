@@ -3,8 +3,33 @@ import { cropPage } from './question-capture';
 import { validCaptureBox } from './capture-editor';
 import { normalizeQuestionText } from './math-normalization';
 import { hasHwpxIdentity, readQuestionContext, sourceBasename } from './question-context';
+import { freePdfQuestionId } from './pdf-question-edit';
 
 const format = 'munhang-map-review';
+
+function restoreSplitIds(questions: AnalyzedQuestion[], hwpx: boolean) {
+  const groups = new Map<number, AnalyzedQuestion[]>();
+  for (const question of questions) {
+    const group = groups.get(question.number);
+    if (group) group.push(question);
+    else groups.set(question.number, [question]);
+  }
+  const used = new Set(groups.keys());
+  for (const [printedNumber, group] of groups) {
+    if (group.length === 1) continue;
+    // v0.7.21 assigned printed numbers to manually split PDF fragments. Repair
+    // just those fragments; preserve the original question, text and answers.
+    const originals = group.filter(q => !q.type.startsWith('수동 분리') || q.sourceQuestionNumber !== undefined);
+    if (hwpx || originals.length > 1) throw new Error('검토 파일의 내부 문항 번호가 중복되었습니다. 정답이 여러 문항에 연결되지 않도록 중단했습니다.');
+    const original = originals[0] ?? group[0];
+    for (const fragment of group) {
+      if (fragment === original) continue;
+      fragment.sourceQuestionNumber = printedNumber;
+      fragment.number = freePdfQuestionId(used, printedNumber);
+      used.add(fragment.number);
+    }
+  }
+}
 
 export function serializeReview(fileName: string, questions: AnalyzedQuestion[], sourcePages: string[]) {
   const hwpx = !sourcePages.length && questions.every(hasHwpxIdentity) && new Set(questions.map(question => question.sourceFingerprint)).size === 1;
@@ -29,7 +54,6 @@ export async function parseReview(content: string) {
   const value = JSON.parse(content);
   if (value?.format !== format || value.version !== 1 || typeof value.fileName !== 'string' || !Array.isArray(value.sourcePages) || value.sourcePages.length > 200 || !value.sourcePages.every((image: unknown) => typeof image === 'string' && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(image)) || !Array.isArray(value.questions) || !value.questions.length || value.questions.length > 1000) throw new Error('문항맵에서 저장한 검토 파일인지 확인해 주세요.');
   const sourcePages: string[] = value.sourcePages;
-  if (new Set(value.questions.map((item: { number?: unknown }) => item?.number)).size !== value.questions.length) throw new Error('검토 파일의 내부 문항 번호가 중복되었습니다. 정답이 여러 문항에 연결되지 않도록 중단했습니다.');
   const hwpx = sourcePages.length === 0 && value.questions.every((item: Record<string, unknown>) => item && hasHwpxIdentity(item)) && new Set(value.questions.map((item: Record<string, unknown>) => item.sourceFingerprint)).size === 1;
   if (!sourcePages.length && !hwpx) throw new Error('HWPX 원본 정보가 올바르지 않습니다.');
   if (!hwpx && value.questions.length > 200) throw new Error('PDF 검토 파일은 200문항까지 불러올 수 있습니다.');
@@ -62,6 +86,7 @@ export async function parseReview(content: string) {
       sourcePageImage: hwpx ? undefined : sourcePages[item.sourcePage - 1], questionCaptures: captures,
     });
   }
+  restoreSplitIds(questions, hwpx);
   return { fileName: sourceBasename(value.fileName) || '시험지', questions, sourcePages };
 }
 
